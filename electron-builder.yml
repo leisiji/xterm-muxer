@@ -1,0 +1,29 @@
+appId: com.xterm-muxer.app
+productName: XtermMuxer
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - '!**/*.map'
+asarUnpack:
+  - '**/*.node'
+npmRebuild: true
+win:
+  executableName: xterm-muxer
+  target:
+    - nsis
+  artifactName: ${name}-${version}-${arch}-setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+linux:
+  target:
+    - AppImage
+  category: Utility
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/

@@ -1,0 +1,412 @@
+:root {
+  --app-bg: #0b0e14;
+  --app-fg: #c6c8d1;
+  --app-accent: #57c7ff;
+  --app-tab-bg: rgba(128, 128, 128, 0.08);
+  --app-tab-active: rgba(128, 128, 128, 0.16);
+  --app-border: rgba(128, 128, 128, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--app-fg);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.boot,
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-fg);
+  opacity: 0.6;
+}
+
+/* ---------- tab bar ---------- */
+
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  background: var(--app-bg);
+  border-bottom: 1px solid var(--app-border);
+  height: 34px;
+  flex: 0 0 auto;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tab-list {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 8px;
+  max-width: 220px;
+  min-width: 90px;
+  border-right: 1px solid var(--app-border);
+  cursor: default;
+  background: var(--app-tab-bg);
+  color: var(--app-fg);
+  opacity: 0.85;
+}
+
+.tab:hover {
+  background: var(--app-tab-active);
+}
+
+.tab.active {
+  background: var(--app-tab-active);
+  opacity: 1;
+  box-shadow: inset 0 -2px 0 var(--app-accent);
+}
+
+.tab-index {
+  font-size: 11px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab.unseen .tab-title::after {
+  content: "•";
+  margin-left: 6px;
+  color: var(--app-accent);
+}
+
+.tab-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.tab:hover .tab-close {
+  opacity: 0.8;
+}
+
+.tab-close:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.25);
+}
+
+.tab-actions {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  gap: 4px;
+}
+
+.tab-action {
+  border: 1px solid var(--app-border);
+  background: transparent;
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tab-action:hover {
+  background: var(--app-tab-active);
+}
+
+/* ---------- workspace ---------- */
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+/* Every tab stays mounted; only the active one is shown. */
+.tab-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.tab-view-hidden {
+  display: none;
+}
+
+/* display:contents lets the pane participate directly in the split's flex
+   layout. Hidden slots (tab is zoomed) collapse via display:none so the
+   zoomed pane's remaining sibling fills the workspace without unmounting. */
+.pane-slot {
+  display: contents;
+}
+
+.pane-slot-hidden {
+  display: none;
+}
+
+.divider-hidden {
+  display: none;
+}
+
+.split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.split-row {
+  flex-direction: row;
+}
+
+.split-col {
+  flex-direction: column;
+}
+
+.split-child {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.split-child-hidden {
+  display: none;
+}
+
+.divider {
+  flex: 0 0 4px;
+  background: var(--app-border);
+  z-index: 2;
+}
+
+.divider:hover {
+  background: var(--app-accent);
+  opacity: 0.6;
+}
+
+.divider-row {
+  cursor: col-resize;
+}
+
+.divider-col {
+  cursor: row-resize;
+}
+
+body.resizing {
+  cursor: inherit;
+  user-select: none;
+}
+
+/* ---------- terminal pane ---------- */
+
+.terminal-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 0 0 2px;
+  background: var(--app-bg);
+  position: relative;
+}
+
+.terminal-pane .xterm {
+  height: 100%;
+}
+
+.terminal-pane-empty {
+  background: var(--app-bg);
+}
+
+/* ---------- status bar ---------- */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--app-bg);
+  border-top: 1px solid var(--app-border);
+  font-size: 12px;
+  color: var(--app-fg);
+  opacity: 0.85;
+}
+
+.status-left.busy {
+  color: var(--app-accent);
+}
+
+.status-left.error {
+  color: #ff5c57;
+}
+
+.status-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.7;
+}
+
+kbd {
+  font-size: 11px;
+  border: 1px solid var(--app-border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.search-box input {
+  background: var(--app-tab-active);
+  border: 1px solid var(--app-border);
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 3px 8px;
+  width: 220px;
+  outline: none;
+}
+
+.search-box input:focus {
+  border-color: var(--app-accent);
+}
+
+.search-btn {
+  border: 1px solid var(--app-border);
+  background: transparent;
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.search-btn:hover {
+  background: var(--app-tab-active);
+}
+
+/* ---------- modal ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  background: #151a21;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 20px 22px;
+  width: 420px;
+  max-width: 90vw;
+  color: var(--app-fg);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.modal h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.field span {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.field input {
+  background: #0b0e14;
+  border: 1px solid var(--app-border);
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 7px 9px;
+  font-size: 13px;
+  outline: none;
+}
+
+.field input:focus {
+  border-color: var(--app-accent);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.modal-actions button {
+  border: 1px solid var(--app-border);
+  background: transparent;
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.modal-actions button:hover {
+  background: var(--app-tab-active);
+}
+
+.modal-actions button.primary {
+  background: var(--app-accent);
+  border-color: var(--app-accent);
+  color: #0b0e14;
+  font-weight: 600;
+}
+
+.modal-actions button.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
