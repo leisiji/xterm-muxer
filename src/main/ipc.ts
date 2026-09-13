@@ -58,6 +58,12 @@ export function registerIpc(manager: SessionManager): void {
     BrowserWindow.fromWebContents(e.sender)?.close()
   })
 
+  // Alt+Enter: toggle fullscreen (hides the OS title bar), like wezterm.
+  ipcMain.on('window:toggle-fullscreen', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (win) win.setFullScreen(!win.isFullScreen())
+  })
+
   ipcMain.handle('config:get', () => loadConfig())
 
   ipcMain.handle('config:set', (_e, patch: unknown) => updateConfig(patch))

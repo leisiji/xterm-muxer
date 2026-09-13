@@ -74,7 +74,8 @@ const api = {
     set: (patch: unknown): Promise<unknown> => ipcRenderer.invoke('config:set', patch)
   },
   window: {
-    close: (): void => ipcRenderer.send('window:close')
+    close: (): void => ipcRenderer.send('window:close'),
+    toggleFullscreen: (): void => ipcRenderer.send('window:toggle-fullscreen')
   },
   smokeTest: process.env.SMOKE_TEST === '1',
   /** Subscribe to all main->renderer mux events. Returns an unsubscribe fn. */

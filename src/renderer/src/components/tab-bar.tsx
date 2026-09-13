@@ -18,7 +18,7 @@ export function TabBar(props: TabBarProps): ReactElement {
       <div className="tab-list">
         {tabs.map((tab, i) => {
           const pane = tab.activePaneId !== null ? tab.panes.get(tab.activePaneId) : undefined
-          const title = pane?.title || pane?.label || '…'
+          const title = tab.title || pane?.title || pane?.label || '…'
           const cls = 'tab' + (tab.id === activeTabId ? ' active' : '') + (tab.unseen ? ' unseen' : '')
           return (
             <div

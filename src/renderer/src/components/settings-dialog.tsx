@@ -2,11 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { RendererConfig } from '../types'
 
+export interface SettingsValues {
+  font: { family: string; size: number; lineHeight: number }
+  scrollback: number
+  focusFollowsMouse: boolean
+}
+
 export interface SettingsDialogProps {
   open: boolean
   config: RendererConfig
   onCancel: () => void
-  onApply: (font: { family: string; size: number; lineHeight: number }) => void
+  onApply: (values: SettingsValues) => void
 }
 
 /** A few widely-available monospace fonts offered as suggestions. */
@@ -60,6 +66,8 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
   const [family, setFamily] = useState(config.font.family ?? '')
   const [size, setSize] = useState(String(config.font.size))
   const [lineHeight, setLineHeight] = useState(String(config.font.lineHeight))
+  const [history, setHistory] = useState(String(config.scrollback))
+  const [focusFollowsMouse, setFocusFollowsMouse] = useState(config.focusFollowsMouse !== false)
   const familyRef = useRef<HTMLInputElement>(null)
 
   // Re-sync the form from the live config each time the dialog opens.
@@ -68,6 +76,8 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
       setFamily(config.font.family ?? '')
       setSize(String(config.font.size))
       setLineHeight(String(config.font.lineHeight))
+      setHistory(String(config.scrollback))
+      setFocusFollowsMouse(config.focusFollowsMouse !== false)
       familyRef.current?.focus()
       familyRef.current?.select()
     }
@@ -78,17 +88,19 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
 
   const parsedSize = Number(size)
   const parsedLineHeight = Number(lineHeight)
+  const parsedHistory = Math.trunc(Number(history))
   const validSize = Number.isFinite(parsedSize) && parsedSize >= 6 && parsedSize <= 72
   const validLineHeight = Number.isFinite(parsedLineHeight) && parsedLineHeight >= 0.8 && parsedLineHeight <= 3
+  const validHistory = Number.isFinite(parsedHistory) && parsedHistory >= 100 && parsedHistory <= 1_000_000
   const trimmedFamily = family.trim()
   const available = trimmedFamily ? isFontAvailable(trimmedFamily) : false
 
   const apply = (): void => {
-    if (!validSize || !validLineHeight) return
+    if (!validSize || !validLineHeight || !validHistory) return
     props.onApply({
-      family: trimmedFamily,
-      size: parsedSize,
-      lineHeight: parsedLineHeight
+      font: { family: trimmedFamily, size: parsedSize, lineHeight: parsedLineHeight },
+      scrollback: parsedHistory,
+      focusFollowsMouse
     })
   }
 
@@ -96,6 +108,8 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
     setFamily('Maple Mono NF CN')
     setSize('14')
     setLineHeight('1.15')
+    setHistory('10000')
+    setFocusFollowsMouse(true)
   }
 
   return (
@@ -147,6 +161,26 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
           </label>
         </div>
 
+        <label className="field">
+          <span>History limit (lines of scrollback)</span>
+          <input
+            value={history}
+            inputMode="numeric"
+            placeholder="10000"
+            className={validHistory ? '' : 'invalid'}
+            onChange={(e) => setHistory(e.target.value.replace(/[^\d]/g, ''))}
+          />
+        </label>
+
+        <label className="checkbox-field">
+          <input
+            type="checkbox"
+            checked={focusFollowsMouse}
+            onChange={(e) => setFocusFollowsMouse(e.target.checked)}
+          />
+          <span>Focus follows mouse (wezterm pane_focus_follows_mouse)</span>
+        </label>
+
         <div
           className="font-preview"
           style={{ fontFamily: trimmedFamily || undefined, fontSize: validSize ? `${parsedSize}px` : undefined, lineHeight: validLineHeight ? parsedLineHeight : undefined }}
@@ -161,7 +195,7 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
           </button>
           <div className="spacer" />
           <button onClick={props.onCancel}>Cancel</button>
-          <button className="primary" onClick={apply} disabled={!validSize || !validLineHeight}>
+          <button className="primary" onClick={apply} disabled={!validSize || !validLineHeight || !validHistory}>
             Apply
           </button>
         </div>

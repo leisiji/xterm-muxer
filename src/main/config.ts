@@ -36,6 +36,8 @@ export interface AppConfig {
   window: { width: number; height: number; title: string }
   /** Copy the current selection to the clipboard as soon as it is made. Default true. */
   copyOnSelect?: boolean
+  /** Focus the pane under the mouse pointer (wezterm pane_focus_follows_mouse). Default true. */
+  focusFollowsMouse?: boolean
   /**
    * What to do when a session's process exits / an SSH connection drops:
    *   close            always close the pane
@@ -54,6 +56,7 @@ export const defaultConfig: AppConfig = {
   scrollback: 10000,
   window: { width: 1100, height: 700, title: 'XtermMuxer' },
   copyOnSelect: true,
+  focusFollowsMouse: true,
   exitBehavior: 'closeOnCleanExit',
   keys: {}
 }

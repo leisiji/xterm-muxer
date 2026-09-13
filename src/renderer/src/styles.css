@@ -5,6 +5,7 @@
   --app-tab-bg: rgba(128, 128, 128, 0.08);
   --app-tab-active: rgba(128, 128, 128, 0.16);
   --app-border: rgba(128, 128, 128, 0.18);
+  --app-divider: rgba(148, 163, 184, 0.45);
 }
 
 * {
@@ -31,13 +32,61 @@ body,
   height: 100%;
 }
 
-.boot,
-.empty-state {
+.boot {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--app-fg);
+  opacity: 0.6;
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--app-fg);
+}
+
+.empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.empty-hint {
+  font-size: 12px;
+  opacity: 0.55;
+  margin-bottom: 8px;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.empty-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--app-border);
+  color: var(--app-fg);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.empty-actions button:hover {
+  background: var(--app-tab-active);
+  border-color: var(--app-accent);
+}
+
+.empty-actions kbd {
   opacity: 0.6;
 }
 
@@ -48,8 +97,13 @@ body,
   align-items: stretch;
   background: var(--app-bg);
   border-bottom: 1px solid var(--app-border);
-  height: 34px;
+  /* height matches the terminal line height (font size x line height) */
+  height: var(--tab-height, 34px);
+  font-family: var(--font-family, inherit);
+  font-size: var(--font-size, 13px);
+  line-height: 1;
   flex: 0 0 auto;
+  overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -57,8 +111,15 @@ body,
 .tab-list {
   display: flex;
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
-  scrollbar-width: thin;
+  overflow-y: hidden;
+  /* Scroll horizontally without a visible scrollbar. */
+  scrollbar-width: none;
+}
+
+.tab-list::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
@@ -68,6 +129,8 @@ body,
   padding: 0 10px 0 8px;
   max-width: 220px;
   min-width: 90px;
+  min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--app-border);
   cursor: default;
   background: var(--app-tab-bg);
@@ -86,7 +149,7 @@ body,
 }
 
 .tab-index {
-  font-size: 11px;
+  font-size: 0.75em;
   opacity: 0.5;
   font-variant-numeric: tabular-nums;
 }
@@ -110,7 +173,7 @@ body,
   color: inherit;
   opacity: 0;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 1em;
   line-height: 1;
   padding: 0 2px;
   border-radius: 3px;
@@ -127,19 +190,22 @@ body,
 
 .tab-actions {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   padding: 0 6px;
   gap: 4px;
 }
 
 .tab-action {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid var(--app-border);
   background: transparent;
   color: var(--app-fg);
   border-radius: 4px;
-  padding: 3px 8px;
+  padding: 0 0.55em;
   cursor: pointer;
-  font-size: 12px;
+  font-family: inherit;
+  font-size: 0.85em;
 }
 
 .tab-action:hover {
@@ -185,6 +251,9 @@ body,
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* Own stacking context: keeps a pane's composited layers (WebGL canvas,
+     dimming opacity) from painting over the sibling divider. */
+  isolation: isolate;
 }
 
 .pane-abs-hidden {
@@ -194,12 +263,35 @@ body,
 .divider {
   position: absolute;
   z-index: 3;
-  background: var(--app-border);
+  background: transparent;
 }
 
-.divider:hover {
+/* A crisp centered line inside the draggable hit area. */
+.divider::after {
+  content: '';
+  position: absolute;
+  background: var(--app-divider, rgba(148, 163, 184, 0.45));
+  transition: background-color 0.12s ease;
+}
+
+.divider-row::after {
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.divider-col::after {
+  left: 0;
+  top: 50%;
+  width: 100%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.divider:hover::after {
   background: var(--app-accent);
-  opacity: 0.6;
 }
 
 .divider-row {
@@ -224,6 +316,12 @@ body.resizing {
   padding: 2px 0 0 2px;
   background: var(--app-bg);
   position: relative;
+  transition: opacity 0.12s ease;
+}
+
+/* Dim panes that aren't focused within the current tab. */
+.terminal-pane-inactive {
+  opacity: 0.5;
 }
 
 .terminal-pane .xterm {
@@ -355,6 +453,48 @@ kbd {
   white-space: nowrap;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
   z-index: 20;
+}
+
+.resize-overlay {
+  border-color: #e5c07b;
+  color: #e5c07b;
+}
+
+.rename-overlay {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(11, 14, 20, 0.95);
+  border: 1px solid var(--app-accent);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 21;
+}
+
+.rename-overlay .rename-label {
+  font-size: 12px;
+  color: var(--app-accent);
+  white-space: nowrap;
+}
+
+.rename-overlay input {
+  background: var(--app-tab-active);
+  border: 1px solid var(--app-border);
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 4px 8px;
+  width: 260px;
+  outline: none;
+  font-family: var(--font-family, inherit);
+}
+
+.rename-overlay input:focus {
+  border-color: var(--app-accent);
 }
 
 /* ---------- modal ---------- */
@@ -588,4 +728,126 @@ kbd {
 
 .modal-actions button.ghost {
   opacity: 0.8;
+}
+
+/* ---------- terminal scrollbar (custom overlay, revealed while scrolling) ---------- */
+
+/* Hide the native scrollbar so xterm's grid can use the full width; the overlay
+   thumb below is rendered by TerminalPane. */
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.term-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 5;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.term-scrollbar.is-scrolling {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.term-scrollbar-thumb {
+  position: absolute;
+  right: 2px;
+  width: 4px;
+  min-height: 20px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.5);
+}
+
+.term-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.8);
+}
+
+/* ---------- copy mode HUD ---------- */
+
+.copy-hud {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  background: rgba(11, 14, 20, 0.94);
+  border-top: 1px solid var(--app-accent);
+  color: var(--app-fg);
+  font-size: 12px;
+  z-index: 6;
+}
+
+.copy-hud-badge {
+  color: var(--app-accent);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.copy-hud-hint {
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.copy-hud-search {
+  flex: 1;
+  background: var(--app-tab-active);
+  border: 1px solid var(--app-border);
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 2px 8px;
+  outline: none;
+}
+
+.copy-hud-search:focus {
+  border-color: var(--app-accent);
+}
+
+/* ---------- quick select labels (Alt+I) ---------- */
+
+.qs-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+}
+
+.qs-label {
+  position: absolute;
+  box-sizing: border-box;
+  background: rgba(87, 199, 255, 0.28);
+  border-radius: 2px;
+}
+
+.qs-label.qs-dim {
+  opacity: 0.25;
+}
+
+.qs-key {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 0 3px;
+  background: var(--app-accent);
+  color: #0b0e14;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  border-radius: 3px;
 }

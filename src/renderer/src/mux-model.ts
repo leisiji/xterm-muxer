@@ -54,6 +54,8 @@ export interface TabRecord {
   activePaneId: number | null
   zoomedPaneId: number | null
   unseen: boolean
+  /** User-set tab name (leader+,). `null` = derive from the active pane. */
+  title: string | null
 }
 
 export interface MuxState {
@@ -87,7 +89,8 @@ export function makeTab(pane: PaneRecord): TabRecord {
     panes: new Map([[pane.id, pane]]),
     activePaneId: pane.id,
     zoomedPaneId: null,
-    unseen: false
+    unseen: false,
+    title: null
   }
 }
 
@@ -143,10 +146,51 @@ export function removeLeaf(node: PaneNode, paneId: number): PaneNode | null {
 
 /** Set the ratio of the split reached by `path` (array of 'a'|'b'). */
 export function setRatioAt(node: PaneNode, path: Array<'a' | 'b'>, ratio: number): PaneNode {
-  if (node.kind === 'pane' || path.length === 0) return node
+  if (node.kind === 'pane') return node
+  // Empty path targets this node — the root divider of a two-pane split.
+  if (path.length === 0) return { ...node, ratio }
   const [dir, ...rest] = path
   if (dir === 'a') return { ...node, a: setRatioAt(node.a, rest, ratio) }
   return { ...node, b: setRatioAt(node.b, rest, ratio) }
+}
+
+export type ResizeDirection = 'left' | 'right' | 'up' | 'down'
+
+/** Leaves in reading order (preorder) — used to cycle panes for "next pane". */
+export function paneOrder(node: PaneNode, out: number[] = []): number[] {
+  if (node.kind === 'pane') out.push(node.paneId)
+  else {
+    paneOrder(node.a, out)
+    paneOrder(node.b, out)
+  }
+  return out
+}
+
+/**
+ * Nearest ancestor split aligned with `dir` (left/right → 'row', up/down → 'col'),
+ * mirroring wezterm's `adjust_pane_size` which walks up from the active leaf.
+ */
+export function findResizeSplit(
+  node: PaneNode,
+  paneId: number,
+  dir: ResizeDirection
+): { path: Array<'a' | 'b'>; ratio: number } | null {
+  const wantRow = dir === 'left' || dir === 'right'
+  let path: Array<'a' | 'b'> = []
+  let current: PaneNode = node
+  while (current.kind === 'split') {
+    if ((current.orientation === 'row') === wantRow) return { path, ratio: current.ratio }
+    const inA = containsPane(current.a, paneId)
+    path = [...path, inA ? 'a' : 'b']
+    current = inA ? current.a : current.b
+  }
+  return null
+}
+
+/** New ratio for a divider move; Right/Down grow the first child (wezterm sign). */
+export function resizeRatio(ratio: number, dir: ResizeDirection, step = 0.05): number {
+  const delta = dir === 'right' || dir === 'down' ? step : -step
+  return Math.min(0.9, Math.max(0.1, ratio + delta))
 }
 
 export interface Rect {

@@ -156,6 +156,7 @@ function testUpdateConfig(): void {
     assert.strictEqual(c1.font.size, 18)
     assert.strictEqual(c1.font.family, 'Maple Mono NF CN', 'default font family preserved')
     assert.strictEqual(c1.font.lineHeight, 1.15, 'unspecified field keeps default')
+    assert.strictEqual(c1.scrollback, 10000, 'default history limit is 10000')
     assert.strictEqual(loadConfig().font.size, 18, 'persisted to disk')
     ok('updateConfig merges + persists')
 
@@ -165,6 +166,12 @@ function testUpdateConfig(): void {
     assert.strictEqual(c2.font.lineHeight, 1.3)
     assert.strictEqual(loadConfig().font.family, 'JetBrains Mono')
     ok('updateConfig replaces font fields')
+
+    const c3 = updateConfig({ scrollback: 50000 })
+    assert.strictEqual(c3.scrollback, 50000)
+    assert.strictEqual(c3.font.family, 'JetBrains Mono', 'prior font setting preserved')
+    assert.strictEqual(loadConfig().scrollback, 50000)
+    ok('updateConfig sets history limit')
   } finally {
     app.setPath('userData', original)
     fs.rmSync(dir, { recursive: true, force: true })

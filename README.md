@@ -12,9 +12,11 @@
 
 | 能力 | 说明 |
 |---|---|
-| 标签页 | 顶部标签栏（新建 / 关闭 / 循环切换 / 未读输出圆点）；Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PageUp·PageDown 循环 |
-| 分屏 | 上下/左右分屏（对齐 wezterm Windows 默认键位）、拖拽分隔条调比例、Alt+方向键切换焦点、Ctrl+Shift+Z 放大当前 pane |
-| Leader 键 | 类似 tmux 的 prefix：`Alt+N` 进入 leader 模式，`-` 上下分屏（vertical）、`Shift+-` 左右分屏（horizontal）、`c` 新建标签页、`x` 关闭当前 pane，2s 无后续按键自动退出 |
+| 标签页 | 顶部标签栏（高度 = 字体大小 × 行高，随字号设置自动调整；新建 / 关闭 / 循环切换 / 未读输出圆点）；Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PageUp·PageDown 循环 |
+| 启动 | 默认**不打开任何 pane**，显示空状态；用 `Ctrl+Shift+T` / 标签栏 `+` 开本地终端，`Ctrl+Shift+S` 连 SSH |
+| 分屏 | 上下/左右分屏（对齐 wezterm Windows 默认键位）、拖拽分隔条调比例、Alt+方向键切换焦点、Ctrl+Shift+Z 放大当前 pane；同一 tab 内非焦点 pane 自动变暗（dim） |
+| Leader 键 | 类似 tmux 的 prefix：`Alt+N` 进入 leader 模式，`-` 上下分屏（vertical）、`Shift+-` 左右分屏（horizontal）、`c` 新建标签页、`x` 关闭当前 pane、`z` 放大/还原 pane、`,` 重命名当前标签页、`n`/`p` 下一个/上一个标签页、`1`-`9` 跳到第 N 个标签页、`h`/`j`/`k`/`l` 切换 pane 焦点、`r` 进入 resize 模式（再用 `h/j/k/l` 调整 pane 大小），2s 无后续按键自动退出 |
+| 快捷键（对齐 wezterm 配置） | `Alt+m` 切回上一个标签页（`ActivateLastTab`）、`Alt+p` 切换到下一个 pane（`ActivatePaneDirection("Next")`）、`Alt+方向键` 按方向切换 pane |
 | 复制粘贴 | 选中自动复制（`copyOnSelect`，默认开启）、Ctrl+Shift+C/V、右键/中键粘贴 |
 | 搜索 | Ctrl+Shift+F 打开浮动搜索框（Enter 下一个 / Shift+Enter 上一个，无底部状态栏） |
 | SSH | Ctrl+Shift+S 打开连接对话框；支持 `user@host[:port]`、`~/.ssh/config`（Host 通配、Include、Match、%token 展开）、known_hosts 校验（含哈希条目）、SHA256 指纹、publickey/password/keyboard-interactive 认证、ServerAlive 保活 |
@@ -22,9 +24,13 @@
 | SSH 会话继承 | 在 SSH pane 上新建分屏/标签页会复用**同一个已认证的 SSH 连接**（对齐 wezterm `RemoteSshDomain`：一个连接、每个 pane 一条 channel），因此不会再次要求输入密码；配置 `ssh.defaultTarget` 后，启动/新建默认走 SSH 而非本地 shell |
 | 退出行为 | 会话退出 / SSH 断开时按 `exitBehavior` 自动关闭 pane（默认 `closeOnCleanExit`：正常退出或已连接的会话断开则关闭，连接失败则保留错误信息），最后个 pane 关闭时窗口自动关闭 |
 | 标题 | OSC 0/1/2 标题 + 回退标签（进程名 / user@host），窗口标题 `[idx/count] title` |
-| 窗口 | Windows/Linux 移除原生 File/Edit/View/Window 菜单栏（避免与 Alt 快捷键冲突；macOS 保留标准 app menu） |
+| 窗口 | Windows/Linux 移除原生 File/Edit/View/Window 菜单栏（避免与 Alt 快捷键冲突；macOS 保留标准 app menu）；`Alt+Enter` 切换全屏（隐藏系统标题栏） |
 | cwd 继承 | OSC 7 捕获，新本地标签/分屏继承当前 pane 目录 |
-| 配置 | `userData/config.json`（字体、主题、滚动、shell、键位）；`Ctrl+,` 打开设置对话框可实时调整字体与字号（默认 **Maple Mono NF CN**） |
+| 滚动条 | 自绘悬浮样式（overlay），不占用右侧宽度（终端铺满整宽，nvim 等不会被截断），仅在滚动时显示，停止滚动约 800ms 后淡出，可拖动 |
+| Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
+| Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
+| 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标移入哪个 pane 就聚焦它（设置对话框可开关，默认开） |
+| 配置 | `userData/config.json`（字体、主题、滚动历史、shell、键位、copyOnSelect、focusFollowsMouse）；`Ctrl+,` 打开设置对话框可实时调整字体/字号/**history limit**/鼠标跟随焦点（默认 **Maple Mono NF CN**、10000 行） |
 
 ## 架构
 
@@ -40,6 +46,8 @@ Electron main ── IPC ── renderer (React)
   └─ renderer: tabs → pane 二叉树 → xterm.js 实例
         ├─ mux-model.ts / mux-reducer.ts   (Tab/Pane 状态机)
         ├─ split-view / terminal-pane / tab-bar / ssh-dialog / settings-dialog / overlays（底部状态栏已移除）
+        ├─ copy-mode.ts  (vim/wezterm copy mode 纯逻辑，Alt+X)
+        └─ quick-select.ts (wezterm QuickSelect 匹配/标签纯逻辑，Alt+I)
         └─ prompt-input（内联提示行编辑, 对标 wezterm LineEditor）
 ```
 
@@ -69,16 +77,26 @@ npm run build      # 构建产物到 out/
 | 左右分屏（left/right） | `Ctrl+Shift+Alt+5`（即 `%`） |
 | 关闭焦点 pane（末个则关标签页） | `Ctrl+Shift+W` |
 | 上一个 / 下一个标签页 | `Ctrl+PageUp` / `Ctrl+PageDown`，`Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| 焦点移动 | `Alt+方向键` |
+| 焦点移动 | `Alt+方向键`；`Alt+p` 下一个 pane；`Alt+N` 然后 `h`/`j`/`k`/`l` 按方向切换 pane |
+| 切回上一个标签页 | `Alt+m` |
 | 放大当前 pane | `Ctrl+Shift+Z` |
 | 复制 / 粘贴 | `Ctrl+Shift+C` / `Ctrl+Shift+V` |
 | 搜索 | `Ctrl+Shift+F` |
+| Copy mode | `Alt+X` 进入 / 退出当 pane 的 copy mode |
+| Quick select | `Alt+I` 进入 quick select，输入字母标签复制对应内容 |
 | 设置（字体/字号） | `Ctrl+,` |
+| 全屏（隐藏系统标题栏） | `Alt+Enter` |
 | **Leader 键** | `Alt+N` 进入 leader 模式（屏幕底部浮层显示可用命令，2s 超时） |
 | ├ vertical pane（上下分屏） | `Alt+N` 然后 `-`（tmux `split-window -v`） |
 | ├ horizontal pane（左右分屏） | `Alt+N` 然后 `Shift+-`（tmux `split-window -h`） |
 | ├ 新标签页 | `Alt+N` 然后 `c` |
-| └ 关闭当前 pane | `Alt+N` 然后 `x` |
+| ├ 关闭当前 pane | `Alt+N` 然后 `x` |
+| ├ 放大 / 还原当前 pane | `Alt+N` 然后 `z`（wezterm `TogglePaneZoomState`） |
+| ├ 重命名当前标签页 | `Alt+N` 然后 `,`（wezterm `PromptInputLine`，留空恢复自动标题） |
+| ├ 下一个 / 上一个标签页 | `Alt+N` 然后 `n` / `p` |
+| ├ 按方向切换 pane | `Alt+N` 然后 `h`/`j`/`k`/`l`（`ActivatePaneDirection`） |
+| ├ 调整 pane 大小 | `Alt+N` 然后 `r` 进入 resize 模式，再用 `h`/`j`/`k`/`l` 调整（`Esc` 或 1s 后退出） |
+| └ 跳到第 N 个标签页 | `Alt+N` 然后 `1`..`9`（wezterm `LEADER+1..9` → `ActivateTab`） |
 
 ## 配置
 
@@ -89,10 +107,12 @@ npm run build      # 构建产物到 out/
   "shell": { "path": "powershell.exe", "args": ["-NoLogo"] }, // 默认 Windows=%ComSpec%(cmd.exe)
   "font": { "family": "Maple Mono NF CN", "size": 14, "lineHeight": 1.15 }, // 也可用 Ctrl+, 图形化调整
   "theme": { "mode": "system" }, // system | light | dark，可自定义 colors
-  "scrollback": 10000,
+  "scrollback": 10000, // 滚动历史行数（history limit），也可用 Ctrl+, 调整
   "window": { "width": 1100, "height": 700, "title": "XtermMuxer" },
   // 鼠标选中即自动复制到剪贴板（默认 true）；设为 false 则只能用 Ctrl+Shift+C 复制。
   "copyOnSelect": true,
+  // 鼠标移入即聚焦该 pane（wezterm pane_focus_follows_mouse，默认 true）。
+  "focusFollowsMouse": true,
   // 会话退出 / SSH 断开时的行为：close | closeOnCleanExit | hold（默认 closeOnCleanExit）
   //   close            总是关闭 pane
   //   closeOnCleanExit 正常退出(code 0)或曾连接过的会话断开时关闭；

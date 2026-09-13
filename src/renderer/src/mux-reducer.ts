@@ -19,6 +19,7 @@ export type MuxAction =
   | { type: 'title'; paneId: number; title: string }
   | { type: 'cwd'; paneId: number; cwd: string }
   | { type: 'unseen'; tabId: number }
+  | { type: 'rename-tab'; tabId: number; title: string | null }
   | { type: 'activate-tab'; tabId: number }
   | { type: 'focus-pane'; paneId: number }
   | { type: 'zoom'; paneId: number }
@@ -62,7 +63,8 @@ export function muxReducer(state: MuxState, action: MuxAction): MuxState {
         panes: new Map([[pane.id, pane]]),
         activePaneId: pane.id,
         zoomedPaneId: null,
-        unseen: false
+        unseen: false,
+        title: null
       }
       return { tabs: [...state.tabs, tab], activeTabId: action.tabId }
     }
@@ -85,6 +87,8 @@ export function muxReducer(state: MuxState, action: MuxAction): MuxState {
       t.root = insertSplit(t.root, action.targetPaneId, action.orientation, action.paneId)
       t.panes.set(action.paneId, newPane)
       t.activePaneId = action.paneId
+      // Splitting while zoomed unzooms so the new pane is actually visible.
+      t.zoomedPaneId = null
       t.unseen = false
       return { ...state, tabs: state.tabs.map((x) => (x.id === t.id ? t : x)) }
     }
@@ -192,11 +196,21 @@ export function muxReducer(state: MuxState, action: MuxAction): MuxState {
       }
     }
 
+    case 'rename-tab': {
+      return {
+        ...state,
+        tabs: state.tabs.map((t) => (t.id === action.tabId ? { ...t, title: action.title } : t))
+      }
+    }
+
     case 'focus-pane': {
       const tab = findTabWithPane(state, action.paneId)
       if (!tab) return state
       const t = cloneTab(tab)
       t.activePaneId = action.paneId
+      // wezterm `unzoom_on_switch_pane`: switching to a different pane while
+      // zoomed unzooms, otherwise the focused pane would stay hidden.
+      if (t.zoomedPaneId !== null && t.zoomedPaneId !== action.paneId) t.zoomedPaneId = null
       return { ...state, tabs: state.tabs.map((x) => (x.id === t.id ? t : x)) }
     }
 

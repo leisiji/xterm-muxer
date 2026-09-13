@@ -4,15 +4,16 @@ import type { ReactElement } from 'react'
 import { TabBar } from './components/tab-bar'
 import { SshDialog } from './components/ssh-dialog'
 import { SettingsDialog } from './components/settings-dialog'
-import { SearchOverlay, LeaderOverlay } from './components/overlays'
+import type { SettingsValues } from './components/settings-dialog'
+import { SearchOverlay, LeaderOverlay, RenameTabOverlay, ResizeOverlay } from './components/overlays'
 import { SplitView } from './components/split-view'
 import type { TerminalHandle } from './components/terminal-pane'
 import { muxReducer, findTabByPaneId } from './mux-reducer'
-import { nextPaneId, nextTabId, neighborLeaf } from './mux-model'
+import { nextPaneId, nextTabId, neighborLeaf, paneOrder, findResizeSplit, resizeRatio } from './mux-model'
 import type { MuxState, PaneRecord, PendingCreate, PromptState, SplitOrientation } from './mux-model'
 import type { RendererConfig, SavedSshHost, SavedSshHostInput } from './types'
 import { resolveTheme } from './theme'
-import { isKey, resolveLeaderKey } from './keys'
+import { isKey, resolveLeaderKey, resolveResizeKey } from './keys'
 
 const initialMux: MuxState = { tabs: [], activeTabId: null }
 
@@ -22,6 +23,7 @@ const fallbackConfig: RendererConfig = {
   scrollback: 10000,
   window: { width: 1100, height: 700, title: 'XtermMuxer' },
   copyOnSelect: true,
+  focusFollowsMouse: true,
   ssh: {},
   exitBehavior: 'closeOnCleanExit',
   keys: {}
@@ -32,6 +34,7 @@ export function App(): ReactElement {
   const [config, setConfig] = useState<RendererConfig | null>(null)
   const [sshDialogOpen, setSshDialogOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
   const [sshHosts, setSshHosts] = useState<string[]>([])
   const [savedHosts, setSavedHosts] = useState<SavedSshHost[]>([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -42,6 +45,13 @@ export function App(): ReactElement {
   // A ref mirrors the state so the keydown handler never sees a stale value.
   const leaderRef = useRef(false)
   const leaderTimerRef = useRef<number | undefined>(undefined)
+  // Resize key table (leader+r): one-shot=false with a 1000ms idle timeout.
+  const [resizeActive, setResizeActive] = useState(false)
+  const resizeRef = useRef(false)
+  const resizeTimerRef = useRef<number | undefined>(undefined)
+  // ActivateLastTab (Alt+m): remember the tab we came from.
+  const lastTabRef = useRef<number | null>(null)
+  const prevActiveTabRef = useRef<number | null>(null)
 
   const terminalsRef = useRef(new Map<string, TerminalHandle>())
   // Latest config, readable synchronously when creating a session (state updates
@@ -79,13 +89,20 @@ export function App(): ReactElement {
     root.style.setProperty('--app-bg', colors.background)
     root.style.setProperty('--app-fg', colors.foreground)
     root.style.setProperty('--app-accent', colors.blue)
+    // UI font metrics: the tab bar tracks the terminal font so its height matches
+    // a terminal text line (font size x line height).
+    const family = c.font.family?.trim()
+    if (family) root.style.setProperty('--font-family', family)
+    else root.style.removeProperty('--font-family')
+    root.style.setProperty('--font-size', `${c.font.size}px`)
+    root.style.setProperty('--tab-height', `${Math.round(c.font.size * c.font.lineHeight)}px`)
   }, [])
 
-  /** Persist a settings patch and apply it live (panes pick up font changes). */
+  /** Persist a settings patch and apply it live (panes pick up font/scrollback changes). */
   const applySettings = useCallback(
-    (font: { family: string; size: number; lineHeight: number }): void => {
+    (values: SettingsValues): void => {
       void window.api.config
-        .set({ font })
+        .set(values)
         .then((c) => {
           configRef.current = c
           setConfig(c)
@@ -142,7 +159,9 @@ export function App(): ReactElement {
     }
   }, [])
 
-  // Load config, hosts and open the initial tab.
+  // Load config and SSH hosts. No pane/tab is opened on startup — the user picks
+  // a local shell (Ctrl+Shift+T / +) or SSH (Ctrl+Shift+S); `ssh.defaultTarget`
+  // still applies when they do.
   useEffect(() => {
     let cancelled = false
     const boot = (c: RendererConfig): void => {
@@ -150,8 +169,6 @@ export function App(): ReactElement {
       configRef.current = c
       setConfig(c)
       applyTheme(c)
-      // Creating the first tab after config loads lets `ssh.defaultTarget` apply.
-      newTab()
     }
     void window.api.config
       .get()
@@ -230,9 +247,19 @@ export function App(): ReactElement {
   useEffect(
     () => () => {
       if (leaderTimerRef.current !== undefined) window.clearTimeout(leaderTimerRef.current)
+      if (resizeTimerRef.current !== undefined) window.clearTimeout(resizeTimerRef.current)
     },
     []
   )
+
+  // Track the previously active tab so Alt+m can jump back to it.
+  useEffect(() => {
+    const current = state.activeTabId
+    if (prevActiveTabRef.current !== null && prevActiveTabRef.current !== current) {
+      lastTabRef.current = prevActiveTabRef.current
+    }
+    prevActiveTabRef.current = current
+  }, [state.activeTabId])
 
   // -------- actions --------
 
@@ -320,6 +347,57 @@ export function App(): ReactElement {
     if (next !== null) dispatch({ type: 'focus-pane', paneId: next })
   }
 
+  /** ActivatePaneDirection("Next"): cycle panes in tree order. */
+  function focusNextPane(): void {
+    const s = stateRef.current
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab || tab.activePaneId === null || tab.panes.size < 2) return
+    const order = paneOrder(tab.root)
+    const idx = order.indexOf(tab.activePaneId)
+    if (idx < 0) return
+    dispatch({ type: 'focus-pane', paneId: order[(idx + 1) % order.length] })
+  }
+
+  /** ActivateLastTab (Alt+m): switch back to the previously focused tab. */
+  function activateLastTab(): void {
+    const last = lastTabRef.current
+    if (last !== null && stateRef.current.tabs.some((t) => t.id === last)) {
+      dispatch({ type: 'activate-tab', tabId: last })
+    }
+  }
+
+  // -------- resize key table (leader+r) --------
+
+  function exitResizeMode(): void {
+    if (resizeTimerRef.current !== undefined) {
+      window.clearTimeout(resizeTimerRef.current)
+      resizeTimerRef.current = undefined
+    }
+    resizeRef.current = false
+    setResizeActive(false)
+  }
+
+  function resetResizeTimer(): void {
+    if (resizeTimerRef.current !== undefined) window.clearTimeout(resizeTimerRef.current)
+    resizeTimerRef.current = window.setTimeout(() => exitResizeMode(), 1000)
+  }
+
+  function enterResizeMode(): void {
+    resizeRef.current = true
+    setResizeActive(true)
+    resetResizeTimer()
+  }
+
+  /** AdjustPaneSize: move the nearest aligned divider on the active pane. */
+  function adjustPaneSize(dir: 'left' | 'right' | 'up' | 'down'): void {
+    const s = stateRef.current
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab || tab.activePaneId === null) return
+    const split = findResizeSplit(tab.root, tab.activePaneId, dir)
+    if (!split) return
+    dispatch({ type: 'resize-split', tabId: tab.id, path: split.path, ratio: resizeRatio(split.ratio, dir) })
+  }
+
   async function pasteClipboard(): Promise<void> {
     const sid = activeSessionId()
     if (!sid) return
@@ -360,6 +438,66 @@ export function App(): ReactElement {
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
     const paneId = tab?.activePaneId ?? null
 
+    // Copy mode (Alt+X): while active the pane owns every keystroke so nothing
+    // leaks to the shell; Alt+X again leaves it.
+    const activeSid = activeSessionId()
+    const handle = activeSid ? terminalsRef.current.get(activeSid) : undefined
+    if (isKey(e, 'X', ['Alt'])) {
+      if (handle) {
+        if (handle.copyMode.active()) handle.copyMode.exit()
+        else handle.copyMode.enter()
+        return true
+      }
+    }
+    if (handle?.copyMode.active()) {
+      handle.copyMode.handleKey(e)
+      return true
+    }
+
+    // Quick select (Alt+I): wezterm QuickSelectArgs. While active the pane owns
+    // the keystrokes (label prefix), like copy mode.
+    if (isKey(e, 'I', ['Alt'])) {
+      if (handle) {
+        if (handle.quickSelect.active()) handle.quickSelect.exit()
+        else handle.quickSelect.enter()
+        return true
+      }
+    }
+    if (handle?.quickSelect.active()) {
+      handle.quickSelect.handleKey(e)
+      return true
+    }
+
+    // Resize key table (leader+r): modal, hjkl adjust the active pane's divider
+    // and any other key leaves the mode (wezterm `resize_pane` table).
+    if (resizeRef.current) {
+      const res = resolveResizeKey(e)
+      if (res.kind === 'ignore') return false
+      if (res.kind === 'resize') {
+        adjustPaneSize(res.action)
+        resetResizeTimer()
+      } else {
+        exitResizeMode()
+      }
+      return true
+    }
+
+    // Alt+Enter: toggle fullscreen (hides the Windows title bar), like wezterm.
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key === 'Enter') {
+      window.api.window.toggleFullscreen()
+      return true
+    }
+
+    // Alt+m / Alt+p: ActivateLastTab / ActivatePaneDirection("Next").
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'm') {
+      activateLastTab()
+      return true
+    }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
+      focusNextPane()
+      return true
+    }
+
     // tmux-style leader mode: the key after Alt+N selects a mux command.
     if (leaderRef.current) {
       const res = resolveLeaderKey(e)
@@ -375,9 +513,30 @@ export function App(): ReactElement {
           if (paneId !== null) splitPane(paneId, 'col')
         } else if (res.action === 'close-pane') {
           if (paneId !== null) dispatch({ type: 'close-pane', paneId })
+        } else if (res.action === 'toggle-zoom') {
+          if (paneId !== null) dispatch({ type: 'zoom', paneId })
+        } else if (res.action === 'rename-tab') {
+          setRenameOpen(true)
+        } else if (res.action === 'next-tab') {
+          cycleTab(1)
+        } else if (res.action === 'prev-tab') {
+          cycleTab(-1)
+        } else if (res.action === 'focus-left') {
+          moveFocus('left')
+        } else if (res.action === 'focus-down') {
+          moveFocus('down')
+        } else if (res.action === 'focus-up') {
+          moveFocus('up')
+        } else if (res.action === 'focus-right') {
+          moveFocus('right')
+        } else if (res.action === 'resize-mode') {
+          enterResizeMode()
         } else {
           newTab()
         }
+      } else if (res.kind === 'tab-index') {
+        const target = s.tabs[res.index - 1]
+        if (target) dispatch({ type: 'activate-tab', tabId: target.id })
       }
       // Swallow the key either way so it never reaches the shell.
       return true
@@ -490,10 +649,37 @@ export function App(): ReactElement {
   useEffect(() => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId)
     const pane = tab && tab.activePaneId !== null ? tab.panes.get(tab.activePaneId) : undefined
-    const title = pane?.title || pane?.label || ''
+    const title = tab?.title || pane?.title || pane?.label || ''
     const idx = state.tabs.findIndex((t) => t.id === state.activeTabId)
     document.title = state.tabs.length > 0 ? `[${idx + 1}/${state.tabs.length}] ${title}` : 'XtermMuxer'
   }, [state])
+
+  // Keep DOM focus on the active pane's terminal. Keyed on the active session id
+  // so it also fires when the active *tab* is closed/replaced (per-pane `active`
+  // flags don't change then), and it runs after child cleanup so an unmount can
+  // no longer drop focus to <body>.
+  const focusTab = state.tabs.find((t) => t.id === state.activeTabId)
+  const focusedSession =
+    focusTab && focusTab.activePaneId !== null ? focusTab.panes.get(focusTab.activePaneId)?.sessionId ?? null : null
+  const renameInitial = (() => {
+    if (!focusTab) return ''
+    if (focusTab.title) return focusTab.title
+    const p = focusTab.activePaneId !== null ? focusTab.panes.get(focusTab.activePaneId) : undefined
+    return p?.title || p?.label || ''
+  })()
+  useEffect(() => {
+    if (!focusedSession) return
+    terminalsRef.current.get(focusedSession)?.term.focus()
+  }, [focusedSession])
+
+  // Return focus to the active terminal once any overlay/dialog closes (rename /
+  // settings / SSH), otherwise it is left on <body> and typing goes nowhere.
+  useEffect(() => {
+    if (renameOpen || settingsOpen || sshDialogOpen) return
+    if (!focusedSession) return
+    terminalsRef.current.get(focusedSession)?.term.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renameOpen, settingsOpen, sshDialogOpen])
 
   const registerTerminal = useCallback((sessionId: string, handle: TerminalHandle): void => {
     terminalsRef.current.set(sessionId, handle)
@@ -540,6 +726,20 @@ export function App(): ReactElement {
   }, [])
   const onFocus = useCallback((paneId: number): void => {
     dispatch({ type: 'focus-pane', paneId })
+    // Copy mode is exclusive to the focused pane: leave it on the others.
+    const s = stateRef.current
+    let focusedSid: string | null = null
+    for (const t of s.tabs) {
+      const p = t.panes.get(paneId)
+      if (p) {
+        focusedSid = p.sessionId
+        break
+      }
+    }
+    for (const [sid, h] of terminalsRef.current) {
+      if (sid !== focusedSid && h.copyMode?.active()) h.copyMode.exit()
+      if (sid !== focusedSid && h.quickSelect?.active()) h.quickSelect.exit()
+    }
   }, [])
   const resolvePrompt = useCallback((promptId: string, value: string): void => {
     void window.api.sessions.answerPrompt(promptId, value)
@@ -576,7 +776,18 @@ export function App(): ReactElement {
       />
       <div className="workspace">
         {state.tabs.length === 0 && (
-          <div className="empty-state">Open a terminal: Ctrl+Shift+T · SSH: Ctrl+Shift+S</div>
+          <div className="empty-state">
+            <div className="empty-title">No sessions open</div>
+            <div className="empty-hint">Start a local shell or connect over SSH.</div>
+            <div className="empty-actions">
+              <button onClick={newTab}>
+                New terminal <kbd>Ctrl+Shift+T</kbd>
+              </button>
+              <button onClick={() => setSshDialogOpen(true)}>
+                New SSH connection <kbd>Ctrl+Shift+S</kbd>
+              </button>
+            </div>
+          </div>
         )}
         {/* Every tab stays mounted (hidden when inactive) so its sessions are
             not destroyed by tab switches; zoom is handled inside SplitView. */}
@@ -598,13 +809,25 @@ export function App(): ReactElement {
         onClose={() => setSearchOpen(false)}
       />
       <LeaderOverlay active={leaderActive} />
+      <ResizeOverlay active={resizeActive} />
+      <RenameTabOverlay
+        open={renameOpen && state.activeTabId !== null}
+        initial={renameInitial}
+        onCancel={() => setRenameOpen(false)}
+        onSubmit={(name) => {
+          setRenameOpen(false)
+          if (state.activeTabId !== null) {
+            dispatch({ type: 'rename-tab', tabId: state.activeTabId, title: name || null })
+          }
+        }}
+      />
       <SettingsDialog
         open={settingsOpen}
         config={config}
         onCancel={() => setSettingsOpen(false)}
-        onApply={(font) => {
+        onApply={(values) => {
           setSettingsOpen(false)
-          applySettings(font)
+          applySettings(values)
         }}
       />
       <SshDialog

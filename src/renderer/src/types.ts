@@ -8,6 +8,8 @@ export interface RendererConfig {
   window: { width: number; height: number; title: string }
   /** Copy the current selection to the clipboard as soon as it is made. Default true. */
   copyOnSelect?: boolean
+  /** Focus the pane under the mouse pointer. Default true. */
+  focusFollowsMouse?: boolean
   /** SSH settings. `defaultTarget` makes new sessions SSH instead of local. */
   ssh?: { defaultTarget?: string }
   /** What to do when a session exits (see main/config.ts). */
@@ -77,6 +79,7 @@ export interface WindowApi {
   }
   window: {
     close: () => void
+    toggleFullscreen: () => void
   }
   smokeTest: boolean
   onEvent: (handler: (payload: MuxEvent) => void) => () => void
