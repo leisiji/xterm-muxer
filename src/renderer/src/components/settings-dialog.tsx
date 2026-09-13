@@ -6,6 +6,7 @@ export interface SettingsValues {
   font: { family: string; size: number; lineHeight: number }
   scrollback: number
   focusFollowsMouse: boolean
+  tabBar: { position: 'top' | 'bottom' }
 }
 
 export interface SettingsDialogProps {
@@ -68,6 +69,7 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
   const [lineHeight, setLineHeight] = useState(String(config.font.lineHeight))
   const [history, setHistory] = useState(String(config.scrollback))
   const [focusFollowsMouse, setFocusFollowsMouse] = useState(config.focusFollowsMouse !== false)
+  const [tabBarPosition, setTabBarPosition] = useState<'top' | 'bottom'>(config.tabBar?.position ?? 'top')
   const familyRef = useRef<HTMLInputElement>(null)
 
   // Re-sync the form from the live config each time the dialog opens.
@@ -78,6 +80,7 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
       setLineHeight(String(config.font.lineHeight))
       setHistory(String(config.scrollback))
       setFocusFollowsMouse(config.focusFollowsMouse !== false)
+      setTabBarPosition(config.tabBar?.position ?? 'top')
       familyRef.current?.focus()
       familyRef.current?.select()
     }
@@ -100,7 +103,8 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
     props.onApply({
       font: { family: trimmedFamily, size: parsedSize, lineHeight: parsedLineHeight },
       scrollback: parsedHistory,
-      focusFollowsMouse
+      focusFollowsMouse,
+      tabBar: { position: tabBarPosition }
     })
   }
 
@@ -110,6 +114,7 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
     setLineHeight('1.15')
     setHistory('10000')
     setFocusFollowsMouse(true)
+    setTabBarPosition('top')
   }
 
   return (
@@ -179,6 +184,14 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
             onChange={(e) => setFocusFollowsMouse(e.target.checked)}
           />
           <span>Focus follows mouse (wezterm pane_focus_follows_mouse)</span>
+        </label>
+
+        <label className="field">
+          <span>Tab bar position</span>
+          <select value={tabBarPosition} onChange={(e) => setTabBarPosition(e.target.value as 'top' | 'bottom')}>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+          </select>
         </label>
 
         <div

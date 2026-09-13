@@ -6,6 +6,8 @@ export interface RendererConfig {
   }
   scrollback: number
   window: { width: number; height: number; title: string }
+  /** Where the tab bar sits: at the top (default) or bottom of the window. */
+  tabBar?: { position?: 'top' | 'bottom' }
   /** Copy the current selection to the clipboard as soon as it is made. Default true. */
   copyOnSelect?: boolean
   /** Focus the pane under the mouse pointer. Default true. */

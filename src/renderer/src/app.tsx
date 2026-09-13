@@ -22,6 +22,7 @@ const fallbackConfig: RendererConfig = {
   theme: { mode: 'system' },
   scrollback: 10000,
   window: { width: 1100, height: 700, title: 'XtermMuxer' },
+  tabBar: { position: 'top' },
   copyOnSelect: true,
   focusFollowsMouse: true,
   ssh: {},
@@ -764,7 +765,7 @@ export function App(): ReactElement {
   }
 
   return (
-    <div className="app">
+    <div className={'app' + (config.tabBar?.position === 'bottom' ? ' tab-bar-bottom' : '')}>
       <TabBar
         tabs={state.tabs}
         activeTabId={state.activeTabId}

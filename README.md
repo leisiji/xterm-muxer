@@ -30,7 +30,7 @@
 | Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
 | Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
 | 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标移入哪个 pane 就聚焦它（设置对话框可开关，默认开） |
-| 配置 | `userData/config.json`（字体、主题、滚动历史、shell、键位、copyOnSelect、focusFollowsMouse）；`Ctrl+,` 打开设置对话框可实时调整字体/字号/**history limit**/鼠标跟随焦点（默认 **Maple Mono NF CN**、10000 行） |
+| 配置 | `userData/config.json`（字体、主题、滚动历史、shell、键位、copyOnSelect、focusFollowsMouse、tabBar.position）；`Ctrl+,` 打开设置对话框可实时调整字体/字号/**history limit**/鼠标跟随焦点/标签栏位置（默认 **Maple Mono NF CN**、10000 行、标签栏在顶部） |
 
 ## 架构
 
@@ -109,6 +109,8 @@ npm run build      # 构建产物到 out/
   "theme": { "mode": "system" }, // system | light | dark，可自定义 colors
   "scrollback": 10000, // 滚动历史行数（history limit），也可用 Ctrl+, 调整
   "window": { "width": 1100, "height": 700, "title": "XtermMuxer" },
+  // 标签栏位置：top（默认，窗口顶部）| bottom（窗口底部），也可用 Ctrl+, 调整。
+  "tabBar": { "position": "top" },
   // 鼠标选中即自动复制到剪贴板（默认 true）；设为 false 则只能用 Ctrl+Shift+C 复制。
   "copyOnSelect": true,
   // 鼠标移入即聚焦该 pane（wezterm pane_focus_follows_mouse，默认 true）。

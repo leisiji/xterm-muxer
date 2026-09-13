@@ -32,6 +32,17 @@ body,
   height: 100%;
 }
 
+/* Tab bar at the bottom: reverse the column so the bar renders below the
+   workspace. Absolutely-positioned overlays keep their explicit top/bottom. */
+.app.tab-bar-bottom {
+  flex-direction: column-reverse;
+}
+
+.app.tab-bar-bottom .tab-bar {
+  border-bottom: none;
+  border-top: 1px solid var(--app-border);
+}
+
 .boot {
   flex: 1;
   display: flex;
@@ -538,7 +549,8 @@ kbd {
   opacity: 0.8;
 }
 
-.field input {
+.field input,
+.field select {
   background: #0b0e14;
   border: 1px solid var(--app-border);
   color: var(--app-fg);
@@ -548,7 +560,8 @@ kbd {
   outline: none;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   border-color: var(--app-accent);
 }
 
