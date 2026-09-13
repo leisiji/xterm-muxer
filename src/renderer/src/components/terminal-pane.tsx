@@ -65,10 +65,19 @@ function parseOsc7(data: string): string {
   return s
 }
 
+/** Resolve the configured font family, falling back to a platform monospace stack. */
+function fontFamilyOf(config: RendererConfig): string {
+  if (config.font.family) return config.font.family
+  return navigator.platform.includes('Win')
+    ? 'Cascadia Mono, Consolas, monospace'
+    : '"Cascadia Mono", "JetBrains Mono", "Fira Code", Menlo, monospace'
+}
+
 export function TerminalPane(props: TerminalPaneProps): ReactElement {
   const { pane, config, onFocus } = props
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const promptRef = useRef<ActivePrompt | null>(null)
 
@@ -80,7 +89,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
 
     const term = new Terminal({
       allowProposedApi: true,
-      fontFamily: config.font.family || (navigator.platform.includes('Win') ? 'Cascadia Mono, Consolas, monospace' : '"Cascadia Mono", "JetBrains Mono", "Fira Code", Menlo, monospace'),
+      fontFamily: fontFamilyOf(config),
       fontSize: config.font.size,
       lineHeight: config.font.lineHeight,
       scrollback: config.scrollback,
@@ -98,10 +107,11 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     term.loadAddon(search)
     term.loadAddon(unicode)
     term.unicode.activeVersion = '11'
+    let webgl: WebglAddon | null = null
     try {
       if (webglAvailable()) {
-        const webgl = new WebglAddon()
-        webgl.onContextLoss(() => webgl.dispose())
+        webgl = new WebglAddon()
+        webgl.onContextLoss(() => webgl?.dispose())
         term.loadAddon(webgl)
       }
     } catch {
@@ -115,6 +125,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       /* layout not ready yet */
     }
     termRef.current = term
+    fitRef.current = fit
 
     const ro = new ResizeObserver(() => {
       try {
@@ -143,6 +154,22 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
 
     term.onTitleChange((title: string) => {
       props.onTitle(pane.id, title)
+    })
+
+    // Copy-on-select (wezterm/X11-style primary selection): once a selection
+    // settles, put it on the clipboard without needing Ctrl+Shift+C. A short
+    // debounce avoids a clipboard write on every drag update.
+    let selectionTimer: number | undefined
+    const copyOnSelect = config.copyOnSelect !== false
+    term.onSelectionChange(() => {
+      if (!copyOnSelect) return
+      if (selectionTimer !== undefined) window.clearTimeout(selectionTimer)
+      if (!term.hasSelection()) return
+      selectionTimer = window.setTimeout(() => {
+        selectionTimer = undefined
+        const sel = term.getSelection()
+        if (sel) void navigator.clipboard.writeText(sel).catch(() => undefined)
+      }, 120)
     })
 
     try {
@@ -188,17 +215,50 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
 
     return () => {
       cancelled = true
+      if (selectionTimer !== undefined) window.clearTimeout(selectionTimer)
       ro.disconnect()
       const sid = sessionIdRef.current
       if (sid) {
         props.unregisterTerminal(sid)
         void window.api.sessions.destroy(sid)
       }
-      term.dispose()
+      // Dispose the WebGL addon while the terminal core is still alive: its
+      // teardown recreates a DOM renderer, which fails if it runs during
+      // Terminal.dispose() (xterm-addon-webgl 0.16) and throws inside React's
+      // effect cleanup, unmounting the whole tree. Guard both calls so a
+      // renderer teardown race can never blank the app.
+      try {
+        webgl?.dispose()
+      } catch {
+        /* renderer already gone */
+      }
+      try {
+        term.dispose()
+      } catch {
+        /* addon teardown race */
+      }
       termRef.current = null
+      fitRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id])
+
+  // Apply font changes live (settings dialog) without recreating the terminal.
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.fontFamily = fontFamilyOf(config)
+    term.options.fontSize = config.font.size
+    term.options.lineHeight = config.font.lineHeight
+    try {
+      fitRef.current?.fit()
+    } catch {
+      /* ignore */
+    }
+    const sid = sessionIdRef.current
+    if (sid) void window.api.sessions.resize(sid, term.cols, term.rows)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.font.family, config.font.size, config.font.lineHeight])
 
   // Enter prompt mode when the session asks a question (wezterm LineEditor analog).
   useEffect(() => {

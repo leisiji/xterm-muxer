@@ -10,6 +10,7 @@ import {
   leafRects
 } from '../src/renderer/src/mux-model'
 import { muxReducer } from '../src/renderer/src/mux-reducer'
+import { resolveLeaderKey } from '../src/renderer/src/keys'
 
 let passed = 0
 function ok(name: string): void {
@@ -132,5 +133,29 @@ tree = muxReducer(tree, { type: 'close-pane', paneId: 11 })
 assert.strictEqual(countPanes(tree.tabs[0].root), 2)
 assert.ok(!containsPane(tree.tabs[0].root, 11))
 ok('reducer: close-pane collapses split')
+
+// --- leader key (Alt+N prefix) ---
+const ev = (key: string, mods: Partial<{ ctrl: boolean; alt: boolean; meta: boolean; shift: boolean }> = {}) => ({
+  key,
+  ctrlKey: !!mods.ctrl,
+  altKey: !!mods.alt,
+  metaKey: !!mods.meta,
+  shiftKey: !!mods.shift
+})
+// Regression: Shift+- fires a bare "Shift" keydown first; it must not cancel leader.
+assert.deepStrictEqual(resolveLeaderKey(ev('Shift', { shift: true })), { kind: 'ignore' })
+assert.deepStrictEqual(resolveLeaderKey(ev('Control', { ctrl: true })), { kind: 'ignore' })
+assert.deepStrictEqual(resolveLeaderKey(ev('Alt', { alt: true })), { kind: 'ignore' })
+// Then the real key resolves the split commands (both the `_` and `-`+shift forms).
+assert.deepStrictEqual(resolveLeaderKey(ev('_', { shift: true })), { kind: 'action', action: 'split-row' })
+assert.deepStrictEqual(resolveLeaderKey(ev('-', { shift: true })), { kind: 'action', action: 'split-row' })
+assert.deepStrictEqual(resolveLeaderKey(ev('-')), { kind: 'action', action: 'split-col' })
+assert.deepStrictEqual(resolveLeaderKey(ev('C', { shift: true })), { kind: 'action', action: 'new-tab' })
+assert.deepStrictEqual(resolveLeaderKey(ev('x')), { kind: 'action', action: 'close-pane' })
+assert.deepStrictEqual(resolveLeaderKey(ev('X', { shift: true })), { kind: 'action', action: 'close-pane' })
+// Any other key leaves leader mode.
+assert.deepStrictEqual(resolveLeaderKey(ev('q')), { kind: 'cancel' })
+assert.deepStrictEqual(resolveLeaderKey(ev('-', { ctrl: true })), { kind: 'cancel' })
+ok('leader key: Shift+- splits row, bare Shift ignored, x closes pane')
 
 console.log(`\nMUX TESTS PASSED (${passed} assertions)`)

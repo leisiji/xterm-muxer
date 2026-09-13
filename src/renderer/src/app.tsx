@@ -2,24 +2,28 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { TabBar } from './components/tab-bar'
-import { StatusBar } from './components/status-bar'
 import { SshDialog } from './components/ssh-dialog'
+import { SettingsDialog } from './components/settings-dialog'
+import { SearchOverlay, LeaderOverlay } from './components/overlays'
 import { SplitView } from './components/split-view'
 import type { TerminalHandle } from './components/terminal-pane'
 import { muxReducer, findTabByPaneId } from './mux-reducer'
 import { nextPaneId, nextTabId, neighborLeaf } from './mux-model'
 import type { MuxState, PaneRecord, PendingCreate, PromptState, SplitOrientation } from './mux-model'
-import type { RendererConfig } from './types'
+import type { RendererConfig, SavedSshHost, SavedSshHostInput } from './types'
 import { resolveTheme } from './theme'
-import { isKey } from './keys'
+import { isKey, resolveLeaderKey } from './keys'
 
 const initialMux: MuxState = { tabs: [], activeTabId: null }
 
 const fallbackConfig: RendererConfig = {
-  font: { size: 14, lineHeight: 1.15 },
+  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15 },
   theme: { mode: 'system' },
   scrollback: 10000,
   window: { width: 1100, height: 700, title: 'XtermMuxer' },
+  copyOnSelect: true,
+  ssh: {},
+  exitBehavior: 'closeOnCleanExit',
   keys: {}
 }
 
@@ -27,11 +31,25 @@ export function App(): ReactElement {
   const [state, dispatch] = useReducer(muxReducer, initialMux)
   const [config, setConfig] = useState<RendererConfig | null>(null)
   const [sshDialogOpen, setSshDialogOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [sshHosts, setSshHosts] = useState<string[]>([])
+  const [savedHosts, setSavedHosts] = useState<SavedSshHost[]>([])
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [leaderActive, setLeaderActive] = useState(false)
+
+  // tmux-style leader (prefix) key: Alt+N arms it, the next key fires a command.
+  // A ref mirrors the state so the keydown handler never sees a stale value.
+  const leaderRef = useRef(false)
+  const leaderTimerRef = useRef<number | undefined>(undefined)
 
   const terminalsRef = useRef(new Map<string, TerminalHandle>())
+  // Latest config, readable synchronously when creating a session (state updates
+  // are async, and the initial tab is created right after config loads).
+  const configRef = useRef<RendererConfig>(fallbackConfig)
+  // Passwords provided via the SSH dialog, kept in memory for this app run only
+  // so inherited panes/tabs don't re-prompt. Never written to disk.
+  const sshSecretsRef = useRef(new Map<string, string>())
   // Output/prompts that arrive before the pane has attached its session are
   // buffered here and flushed on register/attach. Without this, a fast SSH
   // handshake can deliver the banner + first shell prompt before
@@ -39,6 +57,11 @@ export function App(): ReactElement {
   const pendingOutputRef = useRef(new Map<string, string[]>())
   const pendingPromptsRef = useRef(new Map<string, PromptState[]>())
   const attachedRef = useRef(new Set<string>())
+  // Sessions that exited before their pane finished attaching: sessionId -> exit code.
+  const exitedRef = useRef(new Map<string, number | null>())
+  // Sessions that reached the 'connected' state at least once (an established
+  // session that later drops should close; a failed connect should stay visible).
+  const connectedRef = useRef(new Set<string>())
   const stateRef = useRef(state)
   stateRef.current = state
   const smoke = window.api.smokeTest
@@ -58,22 +81,93 @@ export function App(): ReactElement {
     root.style.setProperty('--app-accent', colors.blue)
   }, [])
 
+  /** Persist a settings patch and apply it live (panes pick up font changes). */
+  const applySettings = useCallback(
+    (font: { family: string; size: number; lineHeight: number }): void => {
+      void window.api.config
+        .set({ font })
+        .then((c) => {
+          configRef.current = c
+          setConfig(c)
+          applyTheme(c)
+        })
+        .catch(() => undefined)
+    },
+    [applyTheme]
+  )
+
+  /**
+   * Apply `exitBehavior` to a finished session: close its pane (and the window
+   * when it was the last one) or hold it open showing "Session ended".
+   * `knownPaneId` is passed when the pane exists but its session was not yet
+   * attached (an exit can race the create/attach handshake).
+   */
+  const applySessionExit = useCallback((sessionId: string, code: number | null, knownPaneId?: number): void => {
+    const s = stateRef.current
+    let paneId: number | null = knownPaneId ?? null
+    let isLastPaneOfLastTab = false
+    if (paneId === null) {
+      for (const t of s.tabs) {
+        for (const [pid, p] of t.panes) {
+          if (p.sessionId === sessionId) {
+            paneId = pid
+            isLastPaneOfLastTab = s.tabs.length === 1 && t.panes.size === 1
+          }
+        }
+      }
+    } else {
+      for (const t of s.tabs) {
+        if (t.panes.has(paneId)) {
+          isLastPaneOfLastTab = s.tabs.length === 1 && t.panes.size === 1
+          break
+        }
+      }
+    }
+    if (paneId === null) return
+
+    // 'close': always close. 'closeOnCleanExit' (default): close on a clean exit
+    // or once the session had connected (i.e. a real disconnect); hold a session
+    // that never established so connection/auth errors stay readable.
+    // 'hold': never close.
+    const behavior = configRef.current.exitBehavior ?? 'closeOnCleanExit'
+    const established = connectedRef.current.has(sessionId)
+    connectedRef.current.delete(sessionId)
+    const shouldClose = behavior === 'close' || (behavior === 'closeOnCleanExit' && (code === 0 || established))
+    if (shouldClose) {
+      dispatch({ type: 'close-pane', paneId })
+      // Last pane of the last tab -> close the window, like a terminal does.
+      if (isLastPaneOfLastTab) window.api.window.close()
+    } else {
+      dispatch({ type: 'exit', sessionId })
+    }
+  }, [])
+
   // Load config, hosts and open the initial tab.
   useEffect(() => {
+    let cancelled = false
+    const boot = (c: RendererConfig): void => {
+      if (cancelled) return
+      configRef.current = c
+      setConfig(c)
+      applyTheme(c)
+      // Creating the first tab after config loads lets `ssh.defaultTarget` apply.
+      newTab()
+    }
     void window.api.config
       .get()
       .then((c) => {
-        setConfig(c)
-        applyTheme(c)
+        boot(c)
         if (smoke) console.log('[smoke] config loaded')
       })
       .catch(() => {
-        setConfig(fallbackConfig)
-        applyTheme(fallbackConfig)
+        boot(fallbackConfig)
         if (smoke) console.log('[smoke] config fallback')
       })
     void window.api.sessions.listSshHosts().then(setSshHosts).catch(() => undefined)
-    newTab()
+    void window.api.sessions.listSavedHosts().then(setSavedHosts).catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -102,12 +196,20 @@ export function App(): ReactElement {
           if (ev.id) {
             pendingOutputRef.current.delete(ev.id)
             pendingPromptsRef.current.delete(ev.id)
-            attachedRef.current.delete(ev.id)
-            dispatch({ type: 'exit', sessionId: ev.id })
+            if (attachedRef.current.has(ev.id)) {
+              attachedRef.current.delete(ev.id)
+              applySessionExit(ev.id, ev.code ?? null)
+            } else {
+              // Exit raced the attach handshake; remember it for onAttach.
+              exitedRef.current.set(ev.id, ev.code ?? null)
+            }
           }
           break
         case 'session:status':
-          if (ev.id) dispatch({ type: 'status', sessionId: ev.id, status: ev.status ?? null })
+          if (ev.id) {
+            if (ev.status === 'connected') connectedRef.current.add(ev.id)
+            dispatch({ type: 'status', sessionId: ev.id, status: ev.status ?? null })
+          }
           break
         case 'session:prompt':
           if (ev.id && ev.promptId && ev.text !== undefined) {
@@ -125,17 +227,60 @@ export function App(): ReactElement {
     })
   }, [])
 
+  useEffect(
+    () => () => {
+      if (leaderTimerRef.current !== undefined) window.clearTimeout(leaderTimerRef.current)
+    },
+    []
+  )
+
   // -------- actions --------
+
+  function clearLeader(): void {
+    if (leaderTimerRef.current !== undefined) {
+      window.clearTimeout(leaderTimerRef.current)
+      leaderTimerRef.current = undefined
+    }
+    leaderRef.current = false
+    setLeaderActive(false)
+  }
+
+  function armLeader(): void {
+    if (leaderTimerRef.current !== undefined) window.clearTimeout(leaderTimerRef.current)
+    leaderRef.current = true
+    setLeaderActive(true)
+    // Mirror tmux's prefix: if no follow-up key arrives, drop out of leader mode.
+    leaderTimerRef.current = window.setTimeout(() => clearLeader(), 2000)
+  }
+
+  /**
+   * Decide what a new pane/tab should run:
+   *   1. inherit the active pane's SSH connection (same host/identity),
+   *   2. else use `ssh.defaultTarget` from config (SSH by default),
+   *   3. else a local shell.
+   * The dialog-provided password (if any) is reused from memory for this run.
+   */
+  function sessionFor(pane: PaneRecord | undefined, fallbackCwd?: string): PendingCreate {
+    if (pane?.kind === 'ssh' && pane.sshOpts) {
+      const { target, user, port, identity } = pane.sshOpts
+      return { kind: 'ssh', target, user, port, identity, password: sshSecretsRef.current.get(target) }
+    }
+    const target = configRef.current.ssh?.defaultTarget?.trim()
+    if (target) {
+      return { kind: 'ssh', target, password: sshSecretsRef.current.get(target) }
+    }
+    return { kind: 'local', cwd: pane?.cwd ?? fallbackCwd }
+  }
 
   function newTab(): void {
     const s = stateRef.current
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
     const pane = tab && tab.activePaneId !== null ? tab.panes.get(tab.activePaneId) : undefined
-    const pendingCreate: PendingCreate = { kind: 'local', cwd: pane?.cwd ?? undefined }
-    dispatch({ type: 'open-tab', tabId: nextTabId(), paneId: nextPaneId(), pendingCreate })
+    dispatch({ type: 'open-tab', tabId: nextTabId(), paneId: nextPaneId(), pendingCreate: sessionFor(pane) })
   }
 
   function newSshTab(target: string, identity?: string, password?: string): void {
+    if (password) sshSecretsRef.current.set(target, password)
     dispatch({
       type: 'open-tab',
       tabId: nextTabId(),
@@ -149,19 +294,13 @@ export function App(): ReactElement {
     const tab = findTabByPaneId(s, paneId)
     if (!tab) return
     const pane = tab.panes.get(paneId)
-    let pendingCreate: PendingCreate
-    if (pane?.kind === 'ssh' && pane.sshOpts) {
-      pendingCreate = { kind: 'ssh', ...pane.sshOpts }
-    } else {
-      pendingCreate = { kind: 'local', cwd: pane?.cwd ?? undefined }
-    }
     dispatch({
       type: 'add-pane',
       tabId: tab.id,
       targetPaneId: paneId,
       orientation,
       paneId: nextPaneId(),
-      pendingCreate
+      pendingCreate: sessionFor(pane)
     })
   }
 
@@ -221,12 +360,45 @@ export function App(): ReactElement {
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
     const paneId = tab?.activePaneId ?? null
 
+    // tmux-style leader mode: the key after Alt+N selects a mux command.
+    if (leaderRef.current) {
+      const res = resolveLeaderKey(e)
+      // A chord like Shift+- emits the bare modifier's keydown first ("Shift",
+      // then "_"). Ignore those so arming leader isn't cancelled before the real
+      // key arrives, and let the modifier reach the terminal normally.
+      if (res.kind === 'ignore') return false
+      clearLeader()
+      if (res.kind === 'action') {
+        if (res.action === 'split-row') {
+          if (paneId !== null) splitPane(paneId, 'row')
+        } else if (res.action === 'split-col') {
+          if (paneId !== null) splitPane(paneId, 'col')
+        } else if (res.action === 'close-pane') {
+          if (paneId !== null) dispatch({ type: 'close-pane', paneId })
+        } else {
+          newTab()
+        }
+      }
+      // Swallow the key either way so it never reaches the shell.
+      return true
+    }
+
+    // Alt+N arms leader mode.
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyN' || e.key.toLowerCase() === 'n')) {
+      armLeader()
+      return true
+    }
+
     if (isKey(e, 'T', ['Ctrl', 'Shift'])) {
       newTab()
       return true
     }
     if (isKey(e, 'S', ['Ctrl', 'Shift'])) {
       setSshDialogOpen(true)
+      return true
+    }
+    if (isKey(e, ',', ['Ctrl'])) {
+      setSettingsOpen(true)
       return true
     }
     if (isKey(e, 'W', ['Ctrl', 'Shift'])) {
@@ -294,8 +466,17 @@ export function App(): ReactElement {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // Skip mux shortcuts while the user is typing in a real form field (search
+      // box / SSH dialog). The xterm helper <textarea> is excluded: it is the
+      // terminal's focus sink, and treating it as a form field would swallow
+      // every shortcut whenever a pane has focus.
       const target = e.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      const inFormField =
+        !!target &&
+        (target.tagName === 'INPUT' ||
+          target.isContentEditable ||
+          (target.tagName === 'TEXTAREA' && !target.classList.contains('xterm-helper-textarea')))
+      if (inFormField) return
       if (handleShortcut(e)) {
         e.preventDefault()
         e.stopPropagation()
@@ -328,6 +509,8 @@ export function App(): ReactElement {
     pendingOutputRef.current.delete(sessionId)
     pendingPromptsRef.current.delete(sessionId)
     attachedRef.current.delete(sessionId)
+    exitedRef.current.delete(sessionId)
+    connectedRef.current.delete(sessionId)
   }, [])
 
   const onAttach = useCallback(
@@ -340,8 +523,14 @@ export function App(): ReactElement {
         for (const prompt of queue) dispatch({ type: 'prompt', sessionId, prompt })
         pendingPromptsRef.current.delete(sessionId)
       }
+      // A queued exit means the session ended before the pane attached.
+      if (exitedRef.current.has(sessionId)) {
+        const code = exitedRef.current.get(sessionId) ?? null
+        exitedRef.current.delete(sessionId)
+        applySessionExit(sessionId, code, paneId)
+      }
     },
-    []
+    [applySessionExit]
   )
   const onTitle = useCallback((paneId: number, title: string): void => {
     dispatch({ type: 'title', paneId, title })
@@ -374,9 +563,6 @@ export function App(): ReactElement {
     return <div className="boot">Loading XtermMuxer…</div>
   }
 
-  const tab = state.tabs.find((t) => t.id === state.activeTabId)
-  const activePane: PaneRecord | undefined = tab && tab.activePaneId !== null ? tab.panes.get(tab.activePaneId) : undefined
-
   return (
     <div className="app">
       <TabBar
@@ -386,6 +572,7 @@ export function App(): ReactElement {
         onClose={(tid) => dispatch({ type: 'close-tab', tabId: tid })}
         onNewTab={newTab}
         onNewSsh={() => setSshDialogOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
       />
       <div className="workspace">
         {state.tabs.length === 0 && (
@@ -402,19 +589,35 @@ export function App(): ReactElement {
           </div>
         ))}
       </div>
-      <StatusBar
-        pane={activePane}
-        searchOpen={searchOpen}
-        searchQuery={searchQuery}
-        onSearchQuery={setSearchQuery}
-        onSearchNext={searchNext}
-        onSearchPrev={searchPrev}
-        onSearchClose={() => setSearchOpen(false)}
+      <SearchOverlay
+        open={searchOpen}
+        query={searchQuery}
+        onQuery={setSearchQuery}
+        onNext={searchNext}
+        onPrev={searchPrev}
+        onClose={() => setSearchOpen(false)}
+      />
+      <LeaderOverlay active={leaderActive} />
+      <SettingsDialog
+        open={settingsOpen}
+        config={config}
+        onCancel={() => setSettingsOpen(false)}
+        onApply={(font) => {
+          setSettingsOpen(false)
+          applySettings(font)
+        }}
       />
       <SshDialog
         open={sshDialogOpen}
         hosts={sshHosts}
+        savedHosts={savedHosts}
         onCancel={() => setSshDialogOpen(false)}
+        onSave={(h: SavedSshHostInput) => {
+          void window.api.sessions.saveSshHost(h).then(setSavedHosts).catch(() => undefined)
+        }}
+        onDelete={(id: string) => {
+          void window.api.sessions.deleteSshHost(id).then(setSavedHosts).catch(() => undefined)
+        }}
         onConnect={(target, identity, password) => {
           setSshDialogOpen(false)
           newSshTab(target, identity, password)

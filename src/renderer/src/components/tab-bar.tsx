@@ -8,6 +8,7 @@ export interface TabBarProps {
   onClose: (tabId: number) => void
   onNewTab: () => void
   onNewSsh: () => void
+  onSettings: () => void
 }
 
 export function TabBar(props: TabBarProps): ReactElement {
@@ -40,6 +41,9 @@ export function TabBar(props: TabBarProps): ReactElement {
         })}
       </div>
       <div className="tab-actions">
+        <button className="tab-action" title="Terminal settings (Ctrl+,)" onClick={props.onSettings}>
+          ⚙
+        </button>
         <button className="tab-action" title="New SSH connection (Ctrl+Shift+S)" onClick={props.onNewSsh}>
           SSH
         </button>

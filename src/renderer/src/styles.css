@@ -25,6 +25,7 @@ body,
 }
 
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -167,53 +168,33 @@ body,
   display: none;
 }
 
-/* display:contents lets the pane participate directly in the split's flex
-   layout. Hidden slots (tab is zoomed) collapse via display:none so the
-   zoomed pane's remaining sibling fills the workspace without unmounting. */
-.pane-slot {
-  display: contents;
-}
-
-.pane-slot-hidden {
-  display: none;
-}
-
-.divider-hidden {
-  display: none;
-}
-
-.split {
-  display: flex;
+/* Panes are laid out as flat, keyed, absolutely-positioned slots (see
+   split-view.tsx) so splitting/closing never remounts a live terminal.
+   Dividers are absolute overlays sitting on the pane boundaries. */
+.split-root {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  position: relative;
-}
-
-.split-row {
-  flex-direction: row;
-}
-
-.split-col {
-  flex-direction: column;
-}
-
-.split-child {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  position: relative;
   overflow: hidden;
 }
 
-.split-child-hidden {
+.pane-abs {
+  position: absolute;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-abs-hidden {
   display: none;
 }
 
 .divider {
-  flex: 0 0 4px;
+  position: absolute;
+  z-index: 3;
   background: var(--app-border);
-  z-index: 2;
 }
 
 .divider:hover {
@@ -284,6 +265,11 @@ body.resizing {
   opacity: 0.7;
 }
 
+.status-right.leader-hint {
+  opacity: 1;
+  color: var(--app-accent);
+}
+
 kbd {
   font-size: 11px;
   border: 1px solid var(--app-border);
@@ -322,6 +308,53 @@ kbd {
 
 .search-btn:hover {
   background: var(--app-tab-active);
+}
+
+/* ---------- floating overlays (search / leader) ---------- */
+
+.search-overlay {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(11, 14, 20, 0.92);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+
+.search-overlay input {
+  background: var(--app-tab-active);
+  border: 1px solid var(--app-border);
+  color: var(--app-fg);
+  border-radius: 4px;
+  padding: 4px 8px;
+  width: 240px;
+  outline: none;
+}
+
+.search-overlay input:focus {
+  border-color: var(--app-accent);
+}
+
+.leader-overlay {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: rgba(11, 14, 20, 0.92);
+  border: 1px solid var(--app-accent);
+  border-radius: 999px;
+  color: var(--app-accent);
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  z-index: 20;
 }
 
 /* ---------- modal ---------- */
@@ -379,6 +412,103 @@ kbd {
   border-color: var(--app-accent);
 }
 
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+  font-size: 12px;
+  opacity: 0.9;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-field input {
+  accent-color: var(--app-accent);
+}
+
+/* ---------- saved SSH hosts ---------- */
+
+.saved-hosts {
+  margin-bottom: 14px;
+}
+
+.saved-hosts-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+  margin-bottom: 6px;
+}
+
+.saved-hosts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 132px;
+  overflow-y: auto;
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+}
+
+.saved-host {
+  display: flex;
+  align-items: stretch;
+}
+
+.saved-host + .saved-host {
+  border-top: 1px solid var(--app-border);
+}
+
+.saved-host-main {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--app-fg);
+  text-align: left;
+  padding: 7px 9px;
+  cursor: pointer;
+}
+
+.saved-host-main:hover {
+  background: var(--app-tab-active);
+}
+
+.saved-host-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-host-target {
+  font-size: 11px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-host-delete {
+  border: none;
+  background: transparent;
+  color: var(--app-fg);
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.saved-host-delete:hover {
+  opacity: 1;
+  color: #ff5c57;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -409,4 +539,53 @@ kbd {
 .modal-actions button.primary:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ---------- terminal settings ---------- */
+
+.settings-modal {
+  width: 480px;
+}
+
+.field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.field-row .field {
+  flex: 1;
+}
+
+.field input.invalid {
+  border-color: #ff5c57;
+}
+
+.font-hint {
+  margin: -6px 0 12px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.font-hint.warn {
+  color: #e5c07b;
+  opacity: 0.95;
+}
+
+.font-preview {
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: #0b0e14;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-actions .spacer {
+  flex: 1;
+}
+
+.modal-actions button.ghost {
+  opacity: 0.8;
 }

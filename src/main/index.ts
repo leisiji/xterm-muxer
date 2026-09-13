@@ -48,43 +48,20 @@ function createWindow(): void {
 }
 
 function setMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
-    {
-      label: 'File',
-      submenu: [
-        { role: 'close' as const },
-        { type: 'separator' as const },
-        { role: 'quit' as const }
-      ]
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' as const },
-        { role: 'redo' as const },
-        { type: 'separator' as const },
-        { role: 'cut' as const },
-        { role: 'copy' as const },
-        { role: 'paste' as const },
-        { role: 'selectAll' as const }
-      ]
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' as const },
-        { role: 'forceReload' as const },
-        { role: 'toggleDevTools' as const },
-        { type: 'separator' as const },
-        { role: 'resetZoom' as const },
-        { role: 'zoomIn' as const },
-        { role: 'zoomOut' as const }
-      ]
-    },
-    { role: 'windowMenu' as const }
-  ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  // On Windows/Linux the File/Edit/View/Window menu bar is removed entirely:
+  // it is redundant for a terminal and Alt-based accelerators (the Alt+N leader
+  // key) would otherwise fight the menu's Alt-to-show behaviour. macOS keeps a
+  // standard app menu, as the OS always shows one.
+  if (process.platform === 'darwin') {
+    const template: Electron.MenuItemConstructorOptions[] = [
+      { role: 'appMenu' as const },
+      { role: 'editMenu' as const },
+      { role: 'windowMenu' as const }
+    ]
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  } else {
+    Menu.setApplicationMenu(null)
+  }
 }
 
 if (process.env.SMOKE_TEST === '1') console.log('[smoke] main boot')

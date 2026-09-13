@@ -50,6 +50,9 @@ export class LocalSession implements Session {
     this.proc.onExit(({ exitCode, signal }) => {
       events.onExit(exitCode ?? null, signal ? `terminated by signal ${signal}` : undefined)
     })
+    // A spawned pty is immediately usable; signals the pane as "established" so
+    // exit handling treats it like a connected session.
+    events.onStatus('connected')
   }
 
   write(data: string): void {

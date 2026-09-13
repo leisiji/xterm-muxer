@@ -9,6 +9,7 @@ import * as path from 'path'
 import { app } from 'electron'
 import { Server, utils } from 'ssh2'
 import { parseTarget, resolveSshConfig, listSshHosts } from '../src/main/sessions/ssh-config'
+import { listSavedHosts, saveSshHost, deleteSshHost, loadConfig, updateConfig } from '../src/main/config'
 import { checkKnownHost, addKnownHost, fingerprint, keyTypeOf } from '../src/main/sessions/known-hosts'
 import { SessionManager } from '../src/main/sessions/session-manager'
 import { defaultShell } from '../src/main/sessions/local-session'
@@ -105,6 +106,71 @@ function testSshConfig(): void {
   else fs.rmSync(cfgPath, { force: true })
 }
 
+function testSavedSshHosts(): void {
+  console.log('saved ssh hosts')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xmux-cfg-'))
+  const original = app.getPath('userData')
+  app.setPath('userData', dir)
+  try {
+    assert.deepStrictEqual(listSavedHosts(), [], 'starts empty')
+
+    let list = saveSshHost({ id: 'a1', name: 'web', host: 'example.com', user: 'root', port: 2222 })
+    assert.strictEqual(list.length, 1)
+    assert.strictEqual(list[0].name, 'web')
+    assert.strictEqual(list[0].port, 2222)
+    ok('saveSshHost adds a profile')
+
+    // Same host/user/port updates the existing entry in place (keeps its id).
+    list = saveSshHost({ id: 'ignored', name: 'web2', host: 'example.com', user: 'root', port: 2222 })
+    assert.strictEqual(list.length, 1, 'duplicate target does not append')
+    assert.strictEqual(list[0].id, 'a1', 'existing id preserved')
+    assert.strictEqual(list[0].name, 'web2', 'name updated')
+    ok('saveSshHost updates duplicate target')
+
+    list = saveSshHost({ id: 'b1', name: 'db', host: 'db.internal', user: 'db' })
+    assert.strictEqual(list.length, 2)
+    assert.deepStrictEqual(listSavedHosts().map((h) => h.host).sort(), ['db.internal', 'example.com'])
+    ok('listSavedHosts reads persisted profiles')
+
+    list = deleteSshHost('a1')
+    assert.strictEqual(list.length, 1)
+    assert.strictEqual(list[0].host, 'db.internal')
+    ok('deleteSshHost removes a profile')
+  } finally {
+    app.setPath('userData', original)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * updateConfig deep-merges a partial patch (e.g. the font settings dialog) into
+ * the stored config, persists it, and keeps unspecified defaults intact.
+ */
+function testUpdateConfig(): void {
+  console.log('config: updateConfig (deep merge)')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xmux-cfg2-'))
+  const original = app.getPath('userData')
+  app.setPath('userData', dir)
+  try {
+    const c1 = updateConfig({ font: { size: 18 } })
+    assert.strictEqual(c1.font.size, 18)
+    assert.strictEqual(c1.font.family, 'Maple Mono NF CN', 'default font family preserved')
+    assert.strictEqual(c1.font.lineHeight, 1.15, 'unspecified field keeps default')
+    assert.strictEqual(loadConfig().font.size, 18, 'persisted to disk')
+    ok('updateConfig merges + persists')
+
+    const c2 = updateConfig({ font: { family: 'JetBrains Mono', size: 12, lineHeight: 1.3 } })
+    assert.strictEqual(c2.font.family, 'JetBrains Mono')
+    assert.strictEqual(c2.font.size, 12)
+    assert.strictEqual(c2.font.lineHeight, 1.3)
+    assert.strictEqual(loadConfig().font.family, 'JetBrains Mono')
+    ok('updateConfig replaces font fields')
+  } finally {
+    app.setPath('userData', original)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 function testKnownHosts(): void {
   console.log('known-hosts')
   const blob = makeKeyBlob()
@@ -190,8 +256,26 @@ function testSessionManager(): Promise<void> {
   })
 }
 
-function testSshFlow(): Promise<void> {
+/** Probe a TCP port so tests that need the machine's own sshd can skip cleanly. */
+function portOpen(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = require('net').connect({ host, port })
+    const finish = (open: boolean): void => {
+      socket.destroy()
+      resolve(open)
+    }
+    socket.on('connect', () => finish(true))
+    socket.on('error', () => finish(false))
+    socket.setTimeout(1000, () => finish(false))
+  })
+}
+
+async function testSshFlow(): Promise<void> {
   console.log('SshSession (host-key TOFU + auth prompts + error path)')
+  if (!(await portOpen('127.0.0.1', 22))) {
+    console.log('  skip - no local sshd on 127.0.0.1:22')
+    return
+  }
   // Remove ~/.ssh/known_hosts so the TOFU prompt is guaranteed this run.
   const kh = path.join(os.homedir(), '.ssh', 'known_hosts')
   const khBackup = fs.existsSync(kh) ? fs.readFileSync(kh) : null
@@ -356,13 +440,115 @@ function testSshKeyboardInteractive(): Promise<void> {
   })
 }
 
+/**
+ * wezterm parity: a second pane/tab on the same SSH target reuses the
+ * authenticated transport (RemoteSshDomain keeps one Session) instead of
+ * dialing again, so host-key and password prompts appear only once.
+ */
+function testSshConnectionReuse(): Promise<void> {
+  console.log('SessionManager (SSH connection reuse)')
+  const khBackup = testSshCheck()
+  fs.rmSync(path.join(os.homedir(), '.ssh', 'known_hosts'), { force: true })
+
+  let shells = 0
+  const server = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, (client) => {
+    client.on('error', () => undefined)
+    client.on('authentication', (ctx) => {
+      if (ctx.method === 'password' && ctx.password === 'secret') ctx.accept()
+      else ctx.reject(['password'])
+    })
+    client.on('ready', () => {
+      client.on('session', (accept) => {
+        const session = accept()
+        session.on('pty', (acceptPty) => acceptPty())
+        session.on('shell', (acceptShell) => {
+          const n = ++shells
+          acceptShell().write(`REUSE_SHELL_${n}\r\n$ `)
+        })
+      })
+    })
+  })
+
+  return new Promise((resolve, reject) => {
+    let output = ''
+    let passwordPrompts = 0
+    let hostkeyPrompts = 0
+    let secondStarted = false
+    let finished = false
+    let firstSessionId = ''
+    const done = (fn: () => void): void => {
+      if (finished) return
+      finished = true
+      testSshRestore(khBackup)
+      server.close()
+      try {
+        fn()
+      } catch (err) {
+        reject(err)
+      }
+    }
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number }
+      const manager = new SessionManager(() => undefined)
+      ;(manager as unknown as { sink: (p: unknown) => void }).sink = (p) => {
+        const ev = p as { type: string; id?: string; data?: string; text?: string; promptId?: string; status?: string }
+        if (ev.type === 'session:output') {
+          output += ev.data ?? ''
+          // Once pane 1 has its shell, open a second pane on the same target.
+          if (!secondStarted && ev.id === firstSessionId && output.includes('REUSE_SHELL_1')) {
+            secondStarted = true
+            manager.createSsh({ kind: 'ssh', target: `127.0.0.1:${addr.port}`, user: 'tester', cols: 80, rows: 24 })
+          }
+          if (secondStarted && output.includes('REUSE_SHELL_2')) {
+            done(() => {
+              assert.strictEqual(passwordPrompts, 1, 'password prompted once for the shared transport')
+              assert.strictEqual(hostkeyPrompts, 1, 'host key prompted once for the shared transport')
+              assert.strictEqual(shells, 2, 'both panes got a shell channel')
+              console.log('  ok - second SSH pane reuses the connection (no re-auth)')
+              manager.destroyAll()
+              resolve()
+            })
+          }
+        }
+        if (ev.type === 'session:status' && ev.status === 'error') {
+          done(() => reject(new Error(`reuse flow errored: ${output.slice(0, 300)}`)))
+        }
+        if (ev.type === 'session:prompt') {
+          const t = ev.text ?? ''
+          if (/^Password for/i.test(t)) {
+            passwordPrompts++
+            manager.answerPrompt(ev.promptId as string, 'secret')
+          } else if (/continue connecting/i.test(t)) {
+            hostkeyPrompts++
+            manager.answerPrompt(ev.promptId as string, 'yes')
+          }
+        }
+      }
+      const first = manager.createSsh({ kind: 'ssh', target: `127.0.0.1:${addr.port}`, user: 'tester', cols: 80, rows: 24 })
+      firstSessionId = first.id
+    })
+    setTimeout(() => {
+      done(() =>
+        reject(
+          new Error(
+            `reuse flow timed out; pw=${passwordPrompts} hostkey=${hostkeyPrompts} shells=${shells} output=${JSON.stringify(output.slice(0, 200))}`
+          )
+        )
+      )
+    }, 10000)
+  })
+}
+
 app.whenReady().then(async () => {
   try {
     testParseTarget()
     testSshConfig()
+    testSavedSshHosts()
+    testUpdateConfig()
     testKnownHosts()
     await testSessionManager()
     await testSshKeyboardInteractive()
+    await testSshConnectionReuse()
     await testSshFlow()
     console.log(`\nALL TESTS PASSED (${passed} assertions)`)
     app.exit(0)

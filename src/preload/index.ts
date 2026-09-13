@@ -28,6 +28,17 @@ export interface SessionCreateSshOpts {
 
 export type SessionCreateOpts = SessionCreateLocalOpts | SessionCreateSshOpts
 
+export interface SavedSshHost {
+  id: string
+  name: string
+  host: string
+  user?: string
+  port?: number
+  identity?: string
+}
+
+export type SavedSshHostInput = Omit<SavedSshHost, 'id'> & { id?: string }
+
 export interface MuxEvent {
   type: 'session:output' | 'session:exit' | 'session:status' | 'session:prompt'
   id?: string
@@ -52,10 +63,18 @@ const api = {
     destroy: (id: string): Promise<void> => ipcRenderer.invoke('session:destroy', { id }),
     answerPrompt: (promptId: string, value: string): Promise<void> =>
       ipcRenderer.invoke('session:prompt-answer', { promptId, value }),
-    listSshHosts: (): Promise<string[]> => ipcRenderer.invoke('ssh:list-hosts')
+    listSshHosts: (): Promise<string[]> => ipcRenderer.invoke('ssh:list-hosts'),
+    listSavedHosts: (): Promise<SavedSshHost[]> => ipcRenderer.invoke('ssh:list-saved'),
+    saveSshHost: (host: SavedSshHostInput): Promise<SavedSshHost[]> =>
+      ipcRenderer.invoke('ssh:save', host),
+    deleteSshHost: (id: string): Promise<SavedSshHost[]> => ipcRenderer.invoke('ssh:delete', id)
   },
   config: {
-    get: (): Promise<unknown> => ipcRenderer.invoke('config:get')
+    get: (): Promise<unknown> => ipcRenderer.invoke('config:get'),
+    set: (patch: unknown): Promise<unknown> => ipcRenderer.invoke('config:set', patch)
+  },
+  window: {
+    close: (): void => ipcRenderer.send('window:close')
   },
   smokeTest: process.env.SMOKE_TEST === '1',
   /** Subscribe to all main->renderer mux events. Returns an unsubscribe fn. */

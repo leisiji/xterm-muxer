@@ -6,6 +6,12 @@ export interface RendererConfig {
   }
   scrollback: number
   window: { width: number; height: number; title: string }
+  /** Copy the current selection to the clipboard as soon as it is made. Default true. */
+  copyOnSelect?: boolean
+  /** SSH settings. `defaultTarget` makes new sessions SSH instead of local. */
+  ssh?: { defaultTarget?: string }
+  /** What to do when a session exits (see main/config.ts). */
+  exitBehavior?: 'close' | 'closeOnCleanExit' | 'hold'
   keys: Record<string, string>
 }
 
@@ -29,6 +35,17 @@ export interface SessionCreateSsh {
 
 export type SessionCreateOpts = SessionCreateLocal | SessionCreateSsh
 
+export interface SavedSshHost {
+  id: string
+  name: string
+  host: string
+  user?: string
+  port?: number
+  identity?: string
+}
+
+export type SavedSshHostInput = Omit<SavedSshHost, 'id'> & { id?: string }
+
 export interface MuxEvent {
   type: string
   id?: string
@@ -50,9 +67,16 @@ export interface WindowApi {
     destroy: (id: string) => Promise<void>
     answerPrompt: (promptId: string, value: string) => Promise<void>
     listSshHosts: () => Promise<string[]>
+    listSavedHosts: () => Promise<SavedSshHost[]>
+    saveSshHost: (host: SavedSshHostInput) => Promise<SavedSshHost[]>
+    deleteSshHost: (id: string) => Promise<SavedSshHost[]>
   }
   config: {
     get: () => Promise<RendererConfig>
+    set: (patch: Partial<RendererConfig>) => Promise<RendererConfig>
+  }
+  window: {
+    close: () => void
   }
   smokeTest: boolean
   onEvent: (handler: (payload: MuxEvent) => void) => () => void
