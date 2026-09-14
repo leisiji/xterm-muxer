@@ -29,6 +29,12 @@ export interface SshConnectionInit {
   password?: string
 }
 
+/** A channel plus the terminal size its pty was actually created with. */
+export interface OpenedChannel {
+  stream: Channel
+  size: { cols: number; rows: number }
+}
+
 type ConnectionState = 'connecting' | 'ready' | 'dead'
 
 /**
@@ -125,9 +131,18 @@ export class SshConnection {
   }
 
   /**
-   * Wait until authenticated, then open a fresh remote shell channel, landing in
-   * `cwd` when the spawning pane had one (it comes from the remote's own OSC 7,
-   * so it is a path on the far side).
+   * Wait until authenticated, then open a fresh remote shell channel sized to
+   * `size()`, landing in `cwd` when the spawning pane had one (it comes from the
+   * remote's own OSC 7, so it is a path on the far side).
+   *
+   * `size` is a callback rather than a value on purpose: authentication can take
+   * seconds (host-key prompt, password, keyboard-interactive) and a pane split
+   * off an existing one is fitted -- and re-fitted -- while that is in flight. A
+   * value captured by the caller would be the size the terminal had *before*
+   * that wait, so the pty could be created at a size the pane no longer has.
+   * Reading it here, after `ready()`, is what keeps the two in step; the size the
+   * request carried comes back with the channel so the caller can still forward a
+   * resize that races the request itself.
    *
    * The landing directory is applied by an exec wrapper rather than by typing
    * `cd` at the prompt (wezterm-ssh does the same for its ssh domain): the `cd`
@@ -137,19 +152,20 @@ export class SshConnection {
    *
    * No `cwd` means this is byte-for-byte the plain `ssh host` path.
    */
-  async openChannel(size: { cols: number; rows: number }, cwd?: string): Promise<Channel> {
+  async openChannel(size: () => { cols: number; rows: number }, cwd?: string): Promise<OpenedChannel> {
     await this.ready()
+    const dims = size()
     if (cwd) {
       try {
-        return await this.openExec(remoteShellCommand(cwd), size)
+        return { stream: await this.openExec(remoteShellCommand(cwd), dims), size: dims }
       } catch {
         // Exec refused (restricted server): a plain shell still works, the `cd`
         // just becomes visible as a line of typed input.
       }
     }
-    const stream = await this.openShell(size)
+    const stream = await this.openShell(dims)
     if (cwd) writeInto(stream, [`cd -- ${shQuote(cwd)} 2>/dev/null`])
-    return stream
+    return { stream, size: dims }
   }
 
   /** Open a PTY-backed channel running `command` (an exec request). */

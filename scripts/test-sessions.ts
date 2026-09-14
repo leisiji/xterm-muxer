@@ -596,6 +596,133 @@ function testSshConnectionReuse(): Promise<void> {
 }
 
 /**
+ * Regression: the pty must be created at the size the pane has *when the channel
+ * opens*, not the size the session was asked for at create time.
+ *
+ * Authentication can take seconds (TOFU, password, keyboard-interactive) and the
+ * terminal of a pane split off an existing one is fitted -- and re-fitted --
+ * while that wait is in flight. The pty request used to carry the size captured
+ * before the wait, so a full-screen program starting in that pane (Claude Code,
+ * vim) drew for a terminal the pane no longer was, which is the kind of
+ * misalignment that a redraw appears to "fix".
+ *
+ * Two windows are covered, because they need different handling:
+ *   - a resize during authentication changes what the pty request itself carries;
+ *   - a resize between the request and the server answering it has no stream to
+ *     go to yet, so it has to be forwarded as a window-change afterwards.
+ */
+function testSshPtySizeRace(): Promise<void> {
+  console.log('SshSession (pty size follows the terminal, not the create-time size)')
+  const khBackup = testSshCheck()
+  fs.rmSync(path.join(os.homedir(), '.ssh', 'known_hosts'), { force: true })
+
+  let ptyInfo: { cols: number; rows: number } | null = null
+  const windowChanges: Array<{ cols: number; rows: number }> = []
+  // Hold the pty reply open long enough for the in-flight resize to land.
+  const ptyReplyDelay = 300
+
+  const server = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, (client) => {
+    client.on('error', () => undefined)
+    client.on('authentication', (ctx) => {
+      if (ctx.method === 'password' && ctx.password === 'secret') ctx.accept()
+      else ctx.reject(['password'])
+    })
+    client.on('ready', () => {
+      client.on('session', (accept) => {
+        const session = accept()
+        session.on('pty', (acceptPty, _rejectPty, info) => {
+          ptyInfo = { cols: info.cols, rows: info.rows }
+          setTimeout(() => acceptPty(), ptyReplyDelay)
+        })
+        session.on('window-change', (acceptChange, _reject, info) => {
+          windowChanges.push({ cols: info.cols, rows: info.rows })
+          acceptChange()
+        })
+        session.on('shell', (acceptShell) => {
+          acceptShell().write('SIZE_PROBE_READY\r\n$ ')
+        })
+      })
+    })
+  })
+
+  return new Promise((resolve, reject) => {
+    let finished = false
+    let sessionId = ''
+    let poll: ReturnType<typeof setInterval> | undefined
+    const done = (fn: () => void): void => {
+      if (finished) return
+      finished = true
+      if (poll !== undefined) clearInterval(poll)
+      testSshRestore(khBackup)
+      server.close()
+      try {
+        fn()
+      } catch (err) {
+        reject(err)
+      }
+    }
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number }
+      const manager = new SessionManager(() => undefined)
+      ;(manager as unknown as { sink: (p: unknown) => void }).sink = (p) => {
+        const ev = p as { type: string; data?: string; text?: string; promptId?: string }
+        if (ev.type === 'session:prompt') {
+          const t = ev.text ?? ''
+          if (/^Password for/i.test(t)) {
+            // Still authenticating: the pane has been fitted since create, and
+            // the pty does not exist yet.
+            manager.resize(sessionId, 132, 43)
+            manager.answerPrompt(ev.promptId as string, 'secret')
+          } else if (/continue connecting/i.test(t)) {
+            manager.answerPrompt(ev.promptId as string, 'yes')
+          } else {
+            manager.answerPrompt(ev.promptId as string, '')
+          }
+        }
+      }
+
+      sessionId = manager.createSsh({ kind: 'ssh', target: `127.0.0.1:${addr.port}`, user: 'tester', cols: 80, rows: 24 }).id
+
+      // Phase two: wait until the pty request has been sent (the server has seen
+      // it) but while its reply is still being held. There is no channel to send
+      // a resize through at that point, so this only reaches the pty if the
+      // session forwards it once the channel is up.
+      poll = setInterval(() => {
+        if (!ptyInfo || !sessionId || finished) return
+        if (poll !== undefined) clearInterval(poll)
+        manager.resize(sessionId, 100, 30)
+      }, 10)
+
+      const settle = setInterval(() => {
+        if (finished) return
+        if (ptyInfo && windowChanges.some((c) => c.cols === 100 && c.rows === 30)) {
+          clearInterval(settle)
+          done(() => {
+            assert.deepStrictEqual(ptyInfo, { cols: 132, rows: 43 }, 'pty created at the size the pane had when the channel opened')
+            assert.ok(
+              windowChanges.some((c) => c.cols === 100 && c.rows === 30),
+              `resize racing the pty reply forwarded as window-change: ${JSON.stringify(windowChanges)}`
+            )
+            console.log('  ok - pty size follows the pane across auth and channel open')
+            manager.destroyAll()
+            resolve()
+          })
+        }
+      }, 25)
+    })
+    setTimeout(() => {
+      done(() =>
+        reject(
+          new Error(
+            `pty size flow timed out; pty=${JSON.stringify(ptyInfo)} windowChanges=${JSON.stringify(windowChanges)}`
+          )
+        )
+      )
+    }, 10000)
+  })
+}
+
+/**
  * cwd inheritance: a pane spawned on an inherited SSH connection lands in the
  * directory its spawning pane was in. The landing `cd` rides in an exec wrapper
  * so it never shows up as a typed command or a history entry; a server that
@@ -752,6 +879,7 @@ app.whenReady().then(async () => {
     await testSessionEnv()
     await testSshKeyboardInteractive()
     await testSshConnectionReuse()
+    await testSshPtySizeRace()
     await testSshCwd(true)
     await testSshCwd(false)
     await testSshFlow()

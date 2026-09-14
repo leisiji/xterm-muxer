@@ -29,7 +29,7 @@
 | 滚动条 | 由 `@xterm/xterm` 6 内置提供（VS Code 的 SmoothScrollableElement），悬浮覆盖、滚动/悬停时自动显隐，配色取主题前景色。宽度固定在 14px，可用终端选项 `overviewRuler.width` 调整（注意该选项会一并启用 overview ruler）。**不占用右侧宽度**：终端铺满整宽（见 `fitFullWidth`） |
 | Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
 | Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
-| 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标移入哪个 pane 就聚焦它（设置对话框可开关，默认开） |
+| 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标**移动到**哪个 pane 就聚焦它（设置对话框可开关，默认开）。跟随的是「鼠标移动」而不是「鼠标所在位置」：窗口重新回到前台（Alt+Tab 切回、点任务栏）时浏览器会原地重发一次 `mouseenter`/`mousemove`，那不算移动，不会把焦点从正在输入的 pane 抢走；同理，分屏新出现的 pane 即使正好在光标下也不会抢焦点 |
 | 内联图片 | `@xterm/addon-image`（iTerm IIP + SIXEL），每 pane 32MB 缓存，始终开启。本地会话设 `TERM_PROGRAM=vscode`（yazi 据此选 IIP，否则回退 chafa 无真图），SSH 会话以 env request 尽力传递（受服务端 `AcceptEnv` 限制）。**注意 Windows 本地会话受限**：ConPTY 会丢弃它不实现的转义序列，见下方「ConPTY 与转义序列」 |
 | 配置 | `userData/config.json`（字体、主题、滚动历史、shell、键位、copyOnSelect、focusFollowsMouse、tabBar.position）；`Ctrl+,` 打开设置对话框可实时调整字体/字号/**history limit**/鼠标跟随焦点/标签栏位置（默认 **Maple Mono NF CN**、10000 行、标签栏在顶部） |
 
@@ -54,6 +54,8 @@ Electron main ── IPC ── renderer (React)
 ```
 
 数据流：`node-pty / ssh2 流 → session:output → xterm.write()`；键盘 `xterm.onData → session:write`；resize 经 `session:resize`。SSH 的认证/主机密钥提示通过 `session:prompt` 走终端内联输入。
+
+尺寸约定：**pty 的尺寸必须等于 pane 的 grid**。远端 pty 在通道建立时取当时的 grid（认证可能几秒，期间的 fit 不会被漏掉），通道建立后若尺寸又变过，会再补一个 `window-change`；会话 id 就绪后 renderer 也会重新同步一次，所以不存在「pty 以比 pane 小的尺寸启动、页面靠后续重绘才看起来正常」这种情况。
 
 ## 开发
 
@@ -118,7 +120,8 @@ npm run build      # 构建产物到 out/
   "tabBar": { "position": "top" },
   // 鼠标选中即自动复制到剪贴板（默认 true）；设为 false 则只能用 Ctrl+Shift+C 复制。
   "copyOnSelect": true,
-  // 鼠标移入即聚焦该 pane（wezterm pane_focus_follows_mouse，默认 true）。
+  // 鼠标移动到哪个 pane 即聚焦它（wezterm pane_focus_follows_mouse，默认 true）。
+  // 位置被重发（窗口回到前台）不算移动，见 pointer-move.ts。
   "focusFollowsMouse": true,
   // 会话退出 / SSH 断开时的行为：close | closeOnCleanExit | hold（默认 closeOnCleanExit）
   //   close            总是关闭 pane
@@ -189,7 +192,7 @@ npm run dist:linux    # 本机产出 AppImage
 ## 测试
 
 - `npm run test:unit`：mux 树/ reducer 纯 JS 单测（分屏、折叠、焦点导航、标签生命周期）。
-- `npm run test:sessions`：在 Electron（无窗口）下跑 ssh_config 解析、known_hosts（含哈希条目）、node-pty 本地会话、SSH 端到端流程（主机密钥 TOFU + 认证提示 + 错误路径，连接本机 sshd 验证）、cwd 继承（exec 包装落地 + 服务端拒绝 exec 时的回退，用内置 ssh2 假服务端验证：命令串里的 `cd` 带正确转义，且包装路径**不向会话写入任何内容**）。
+- `npm run test:sessions`：在 Electron（无窗口）下跑 ssh_config 解析、known_hosts（含哈希条目）、node-pty 本地会话、SSH 端到端流程（主机密钥 TOFU + 认证提示 + 错误路径，连接本机 sshd 验证）、cwd 继承（exec 包装落地 + 服务端拒绝 exec 时的回退，用内置 ssh2 假服务端验证：命令串里的 `cd` 带正确转义，且包装路径**不向会话写入任何内容**）、pty 尺寸跟随 pane（认证期间与「请求已发出、回复未回」两个窗口的 resize 都不能丢）。
 
 ## 已知限制
 
@@ -197,6 +200,14 @@ npm run dist:linux    # 本机产出 AppImage
 - `Match exec` / `canonical` 不实现（同 wezterm-ssh）；`ProxyJump` 不实现（同 wezterm）。
 - 搜索为当前 pane 内搜索，未做跨会话。
 - 无自定义键位覆盖 UI（`keys` 配置项预留）。
+
+### WebGL 渲染器的陈旧画面
+
+默认启用 `@xterm/addon-webgl`（由 `webglAvailable()` 探测，失败回落 DOM 渲染器）。上游有一串「纹理图集 / 单元格陈旧到下一次全屏重绘才恢复」的问题（[xtermjs/xterm.js#6042](https://github.com/xtermjs/xterm.js/pull/6042) 及周边的图集重置报告），其中一部分**不会触发 `onContextLoss`**，也就是说拿不到事件可以响应。
+
+表现：全屏程序清屏重画后，它没写的格子仍显示上一屏的内容（SSH pane 里就是登录横幅的水印），而 xterm 的 buffer 本身是对的 —— 此时选区/复制出来的内容是干净的，据此可以和「真的丢了清屏序列」区分开。整屏重绘（如 Claude Code 里按 `Ctrl-L`）能恢复正常，因为重绘会覆盖这些格子。
+
+对策：`terminal-pane.tsx` 的 `repaint()` 在 pane 布局完成时、以及 pane 从隐藏恢复可见时（切换标签页 / 取消 zoom / 窗口回到前台）强制 `term.refresh(0, rows-1)`；`onContextLoss` 时 dispose 交回 DOM 渲染器（xterm 官方建议）。若仍偶发，可考虑按社区做法直接不用 WebGL（VS Code 的内置终端就是 canvas/DOM 渲染器，代价是大量输出时的吞吐）。
 
 ### ConPTY 与转义序列（Windows 本地会话）
 

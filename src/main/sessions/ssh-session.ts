@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import type { Channel } from 'ssh2'
-import type { SshConnection, SshConnectionClient } from './ssh-connection'
+import type { OpenedChannel, SshConnection, SshConnectionClient } from './ssh-connection'
 import type { Session, SessionEvents, SessionKind, SessionStatus } from './session'
 import type { SshCreateOptions } from './session'
 
@@ -101,15 +101,20 @@ export class SshSession implements Session, SshConnectionClient {
   }
 
   private async openChannel(): Promise<void> {
-    let stream: Channel
+    let opened: OpenedChannel
     try {
-      stream = await this.connection.openChannel(this.size, this.cwd)
+      // Hand over the size as a getter: the channel opens after authentication,
+      // and until then this pane's terminal may have been fitted to a different
+      // box (a split is laid out and re-fitted while the transport is still
+      // dialling). The copy is what the pty request ends up carrying.
+      opened = await this.connection.openChannel(() => ({ cols: this.size.cols, rows: this.size.rows }), this.cwd)
     } catch (err) {
       // A dead transport already reported itself via connectionLost(); a live
       // one that refused the channel surfaces the error here.
       if (!this.dead) this.connectionLost(err instanceof Error ? err : new Error(String(err)))
       return
     }
+    const stream = opened.stream
     if (this.dead) {
       try {
         stream.close()
@@ -119,6 +124,15 @@ export class SshSession implements Session, SshConnectionClient {
       return
     }
     this.stream = stream
+    // A resize that landed while the request was in flight only updated
+    // `this.size` -- there was no stream to forward it to yet -- so the pty was
+    // created at the older size. Forward it now, otherwise a full-screen program
+    // starting in this pane draws for a terminal it does not have until the next
+    // unrelated resize comes along. (A `window-change` carries the right size in
+    // that case, which is what makes a redraw fix the layout.)
+    if (opened.size.cols !== this.size.cols || opened.size.rows !== this.size.rows) {
+      this.resize(this.size.cols, this.size.rows)
+    }
     stream.on('data', (d: Buffer) => {
       if (!this.dead) this.events.onOutput(d.toString('utf8'))
     })

@@ -21,8 +21,25 @@ import {
 } from '../copy-mode'
 import type { CopyAction, CopyCursor, CopyModeState, CopySelectionMode, CopyView } from '../copy-mode'
 import { DEFAULT_QUICK_SELECT_PATTERN, assignLabels, findMatches, resolveLabel } from '../quick-select'
+import { pointerMoved } from '../pointer-move'
+import type { PointerPosition } from '../pointer-move'
 import { decodeOsc52 } from '../osc52'
 import type { QuickLine } from '../quick-select'
+
+/**
+ * The pointer position any pane last saw. Focus follows the mouse, so "did the
+ * mouse move?" has to be asked of the pointer rather than of one pane: a pane
+ * the pointer entered before leaving the layout still has to recognise a
+ * re-delivered position as "no movement". See pointer-move.ts.
+ */
+let lastPointer: PointerPosition | null = null
+
+/** Record the pointer at (x, y); true when getting there was an actual move. */
+function pointerMovedNow(x: number, y: number): boolean {
+  const moved = pointerMoved(lastPointer, { x, y })
+  lastPointer = { x, y }
+  return moved
+}
 
 export interface CopyModeHandle {
   active: () => boolean
@@ -145,6 +162,35 @@ function fitToContainer(term: Terminal, fit: FitAddon): void {
     if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows)
   } catch {
     /* keep the addon's result */
+  }
+}
+
+/**
+ * Re-render the whole viewport from the buffer.
+ *
+ * The WebGL renderer can keep showing what it last put on the canvas for cells
+ * whose content it believes has not changed, and it does not always notice that
+ * it has fallen behind -- upstream has had a run of "stale cells until the next
+ * full repaint" bugs around the texture atlas (xtermjs/xterm.js#6042 and the
+ * atlas-reset reports around it), including renderers that go stale without ever
+ * firing `onContextLoss`, which leaves no event to react to. The visible symptom
+ * is a full-screen program that clears the screen and redraws: the cells it
+ * paints are right, while every cell it leaves to the background still shows
+ * whatever was on screen before it started (for an SSH pane, the login banner's
+ * watermark). The buffer is correct in that state -- only the canvas is behind --
+ * so re-rendering every row fixes the display without touching the session.
+ *
+ * Cheap and idempotent, so it is called at the few moments a terminal can
+ * plausibly have picked that up: once a pane is laid out, the point past which no
+ * later layout change is going to repaint it for us, and whenever a pane that was
+ * hidden -- an inactive tab, a zoomed-over pane, a minimized window -- comes back
+ * on screen.
+ */
+function repaint(term: Terminal): void {
+  try {
+    term.refresh(0, term.rows - 1)
+  } catch {
+    /* renderer not attached yet */
   }
 }
 
@@ -560,12 +606,28 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     termRef.current = term
     fitRef.current = fit
 
+    // A pane that was hidden -- an inactive tab, or another pane zoomed over it --
+    // measures 0x0 while it is away, and comes back with a canvas the compositor
+    // may have dropped. The transition back to a real box is the moment to
+    // repaint it (see repaint()).
+    let wasHidden = false
     const ro = new ResizeObserver(() => {
       fitToContainer(term, fit)
+      const box = container.getBoundingClientRect()
+      const hidden = box.width <= 0 || box.height <= 0
+      if (wasHidden && !hidden) repaint(term)
+      wasHidden = hidden
       const sid = sessionIdRef.current
       if (sid) void window.api.sessions.resize(sid, term.cols, term.rows)
     })
     ro.observe(container)
+
+    // Same story one level up: the window being minimized/occluded stops the
+    // renderer's animation frames, so coming back to the foreground repaints.
+    const onVisibilityChange = (): void => {
+      if (!document.hidden) repaint(term)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     term.onData((data: string) => {
       const prompt = promptRef.current
@@ -644,6 +706,15 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
             return
           }
           sessionIdRef.current = res.id
+          // Anything the ResizeObserver reported before the id existed had
+          // nowhere to go and was dropped, so the session was asked to create
+          // its pty at whatever size the terminal had back then. Now that the
+          // id is known, hand over the settled size: a remote pty must never
+          // start narrower or shorter than the pane it is displayed in.
+          void window.api.sessions.resize(res.id, term.cols, term.rows)
+          // The pane is fully laid out at this point; drop any stale cells the
+          // renderer picked up while it was being created.
+          repaint(term)
           props.registerTerminal(res.id, {
             term,
             search,
@@ -670,6 +741,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     return () => {
       cancelled = true
       if (selectionTimer !== undefined) window.clearTimeout(selectionTimer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       ro.disconnect()
       const sid = sessionIdRef.current
       if (sid) {
@@ -744,8 +816,23 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
             })
           }
         }}
-        onMouseEnter={() => {
-          // wezterm pane_focus_follows_mouse
+        onMouseEnter={(e) => {
+          // wezterm pane_focus_follows_mouse -- but only when the mouse is what
+          // moved. Bringing the window back to the foreground (Alt+Tab) re-fires
+          // `mouseenter` under a resting cursor, and that must not pull focus out
+          // of the pane being typed in. See pointer-move.ts.
+          if (!pointerMovedNow(e.clientX, e.clientY)) return
+          if (config.focusFollowsMouse !== false) onFocus(pane.id)
+        }}
+        onMouseMove={(e) => {
+          // Record first, and unconditionally: the baseline has to stay current
+          // while this pane *is* the focused one, otherwise the next re-delivered
+          // position would look like a move. Crossing a boundary happens to
+          // deliver the `mouseenter` above as well, but moving inside a pane
+          // after the window was reactivated only delivers this -- and that is a
+          // real move, so it should re-establish focus following the mouse.
+          const moved = pointerMovedNow(e.clientX, e.clientY)
+          if (!moved || props.active) return
           if (config.focusFollowsMouse !== false) onFocus(pane.id)
         }}
       />

@@ -17,6 +17,7 @@ import { resolveLeaderKey, resolveResizeKey } from '../src/renderer/src/keys'
 import { assignLabels, findMatches, resolveLabel } from '../src/renderer/src/quick-select'
 import type { QuickLine } from '../src/renderer/src/quick-select'
 import { decodeOsc52 } from '../src/renderer/src/osc52'
+import { pointerMoved } from '../src/renderer/src/pointer-move'
 import {
   decodeCopyKey,
   emptyCopyState,
@@ -415,5 +416,19 @@ assert.strictEqual(decodeOsc52(`c;${'A'.repeat(100 * 1024 + 1)}`), null)
 const truncated = Buffer.from([0xe4, 0xb8]).toString('base64') // 2 of the 3 bytes of '中'
 assert.strictEqual(decodeOsc52(`c;${truncated}`), '�')
 ok('osc 52: decode / selection / read refusal')
+
+// --- focus follows the mouse, not the window (Alt+Tab must not steal focus) ---
+assert.strictEqual(pointerMoved(null, { x: 40, y: 12 }), true, 'first position seen counts as a move')
+// What the browser re-delivers on window activation: same coordinates, no movement.
+assert.strictEqual(pointerMoved({ x: 40, y: 12 }, { x: 40, y: 12 }), false, 're-delivered position is not a move')
+// Real movement, in both axes, in either direction.
+assert.strictEqual(pointerMoved({ x: 40, y: 12 }, { x: 41, y: 12 }), true, 'move right')
+assert.strictEqual(pointerMoved({ x: 40, y: 12 }, { x: 40, y: 11 }), true, 'move up')
+assert.strictEqual(pointerMoved({ x: 40, y: 12 }, { x: 399, y: 480 }), true, 'move across panes')
+// Sub-pixel positions stay comparable (Chromium reports fractional clientX/Y on
+// scaled displays, and a move of less than a pixel is still the user moving).
+assert.strictEqual(pointerMoved({ x: 40.5, y: 12 }, { x: 40.5, y: 12 }), false, 'same fractional position')
+assert.strictEqual(pointerMoved({ x: 40.5, y: 12 }, { x: 40.75, y: 12 }), true, 'fractional move')
+ok('pointerMoved: real movement vs. re-delivered position')
 
 console.log(`\nMUX TESTS PASSED (${passed} assertions)`)
