@@ -1,5 +1,5 @@
 import { Client } from 'ssh2'
-import type { Channel, ConnectConfig } from 'ssh2'
+import type { Channel, ConnectConfig, PseudoTtyOptions } from 'ssh2'
 import { parseTarget, resolveSshConfig } from './ssh-config'
 import type { ResolvedSshConfig } from './ssh-config'
 import { addKnownHost, checkKnownHost, defaultKnownHostsFiles, fingerprint, keyTypeOf } from './known-hosts'
@@ -124,23 +124,51 @@ export class SshConnection {
     this.client.connect(connectConfig)
   }
 
-  /** Wait until authenticated, then open a fresh remote shell channel. */
-  async openChannel(size: { cols: number; rows: number }): Promise<Channel> {
+  /**
+   * Wait until authenticated, then open a fresh remote shell channel, landing in
+   * `cwd` when the spawning pane had one (it comes from the remote's own OSC 7,
+   * so it is a path on the far side).
+   *
+   * The landing directory is applied by an exec wrapper rather than by typing
+   * `cd` at the prompt (wezterm-ssh does the same for its ssh domain): the `cd`
+   * happens in a throwaway non-interactive process, so neither the command nor a
+   * shell-history entry ever reaches the pane. A server that refuses the exec
+   * request falls back to a plain shell channel with the `cd` typed in.
+   *
+   * No `cwd` means this is byte-for-byte the plain `ssh host` path.
+   */
+  async openChannel(size: { cols: number; rows: number }, cwd?: string): Promise<Channel> {
     await this.ready()
+    if (cwd) {
+      try {
+        return await this.openExec(remoteShellCommand(cwd), size)
+      } catch {
+        // Exec refused (restricted server): a plain shell still works, the `cd`
+        // just becomes visible as a line of typed input.
+      }
+    }
+    const stream = await this.openShell(size)
+    if (cwd) writeInto(stream, [`cd -- ${shQuote(cwd)} 2>/dev/null`])
+    return stream
+  }
+
+  /** Open a PTY-backed channel running `command` (an exec request). */
+  private openExec(command: string, size: { cols: number; rows: number }): Promise<Channel> {
     return new Promise<Channel>((resolve, reject) => {
-      // TERM_PROGRAM is a best-effort env request: sshd only applies it when the
-      // remote ssh_config accepts the name (OpenSSH's AcceptEnv defaults to
-      // LANG/LC_*), and a refusal is silently ignored. When it does land, a
-      // remote yazi picks IIP instead of falling back to chafa, and the size
-      // reports the image addon answers round-trip back over the same channel.
-      this.client.shell(
-        { cols: size.cols, rows: size.rows, term: 'xterm-256color' },
-        { env: { TERM_PROGRAM: 'vscode' } },
-        (err, stream) => {
-          if (err) reject(err)
-          else resolve(stream)
-        }
-      )
+      this.client.exec(command, { env: TERM_ENV, pty: ptyOptions(size) }, (err, stream) => {
+        if (err) reject(err)
+        else resolve(stream)
+      })
+    })
+  }
+
+  /** Open a PTY-backed login shell channel (what `ssh host` gives you). */
+  private openShell(size: { cols: number; rows: number }): Promise<Channel> {
+    return new Promise<Channel>((resolve, reject) => {
+      this.client.shell(ptyOptions(size), { env: TERM_ENV }, (err, stream) => {
+        if (err) reject(err)
+        else resolve(stream)
+      })
     })
   }
 
@@ -250,6 +278,45 @@ export class SshConnection {
 /** Stable identity for connection reuse: same user/host/port/keys => same transport. */
 export function sshConnectionKey(cfg: ResolvedSshConfig): string {
   return `${cfg.user}@${cfg.host}:${cfg.port}|${cfg.identityFiles.join(',')}`
+}
+
+/**
+ * Env requests sent with every channel. TERM_PROGRAM is best-effort: sshd only
+ * applies it when the remote ssh_config accepts the name (OpenSSH's AcceptEnv
+ * defaults to LANG/LC_*), and a refusal is silently ignored. When it does land,
+ * a remote yazi picks IIP instead of falling back to chafa, and the size
+ * reports the image addon answers round-trip back over the same channel.
+ */
+const TERM_ENV = { TERM_PROGRAM: 'vscode' }
+
+function ptyOptions(size: { cols: number; rows: number }): PseudoTtyOptions {
+  return { cols: size.cols, rows: size.rows, term: 'xterm-256color' }
+}
+
+/** POSIX single-quoting: wrap in '...' and turn each embedded ' into '\''. */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+/**
+ * The command an exec channel runs to land the pane in `cwd` and hand the pty
+ * over to a login shell. `-l` reproduces what sshd does for a plain shell
+ * request -- a login shell, so /etc/profile and ~/.bash_profile still run -- and
+ * `$SHELL`, which sshd sets for the session, is the shell to reproduce it in.
+ * A `cwd` that no longer exists quietly leaves the shell in the login directory.
+ */
+function remoteShellCommand(cwd: string): string {
+  return `cd -- ${shQuote(cwd)} 2>/dev/null; exec "\${SHELL:-/bin/sh}" -l`
+}
+
+/** Type lines into a freshly opened channel (used by the exec-less fallback). */
+function writeInto(stream: Channel, lines: string[]): void {
+  if (lines.length === 0) return
+  try {
+    stream.write(lines.join('\r') + '\r')
+  } catch {
+    /* channel already gone */
+  }
 }
 
 function hostKeyChangedBanner(host: string): string {

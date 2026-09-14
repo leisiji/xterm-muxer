@@ -595,6 +595,152 @@ function testSshConnectionReuse(): Promise<void> {
   })
 }
 
+/**
+ * cwd inheritance: a pane spawned on an inherited SSH connection lands in the
+ * directory its spawning pane was in. The landing `cd` rides in an exec wrapper
+ * so it never shows up as a typed command or a history entry; a server that
+ * refuses the exec request must still get the directory, typed in instead.
+ *
+ * The directory itself is whatever the far side reported as OSC 7 (see the
+ * README for the shell integration that has to be in place there); here it is
+ * handed straight to `createSsh`.
+ */
+function testSshCwd(allowExec: boolean): Promise<void> {
+  console.log(`SshSession (cwd inheritance: ${allowExec ? 'exec wrapper' : 'exec refused -> shell fallback'})`)
+  const khBackup = testSshCheck()
+  fs.rmSync(path.join(os.homedir(), '.ssh', 'known_hosts'), { force: true })
+
+  // A cwd with a quote in it, so the shell quoting is exercised too.
+  const CWD = "/srv/it's app"
+  const QUOTED = `'/srv/it'\\''s app'`
+  let execCommand: string | null = null
+  let typed = ''
+
+  const record = (stream: { on: (ev: string, cb: (d: Buffer) => void) => void }): void => {
+    stream.on('data', (d: Buffer) => {
+      typed += d.toString('utf8')
+    })
+  }
+  const server = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, (client) => {
+    client.on('error', () => undefined)
+    client.on('authentication', (ctx) => {
+      if (ctx.method === 'password' && ctx.password === 'secret') ctx.accept()
+      else ctx.reject(['password'])
+    })
+    client.on('ready', () => {
+      client.on('session', (accept) => {
+        const session = accept()
+        session.on('pty', (acceptPty) => acceptPty())
+        session.on('exec', (acceptExec, rejectExec, info) => {
+          if (!allowExec) {
+            rejectExec()
+            return
+          }
+          execCommand = info.command
+          const stream = acceptExec()
+          record(stream)
+          stream.write('CWD_READY\r\n$ ')
+        })
+        session.on('shell', (acceptShell) => {
+          const stream = acceptShell()
+          record(stream)
+          stream.write('CWD_READY\r\n$ ')
+        })
+      })
+    })
+  })
+
+  return new Promise((resolve, reject) => {
+    let output = ''
+    let finished = false
+    let manager: SessionManager | null = null
+    let setupWatch: ReturnType<typeof setInterval> | undefined
+    const done = (fn: () => void): void => {
+      if (finished) return
+      finished = true
+      if (setupWatch !== undefined) clearInterval(setupWatch)
+      testSshRestore(khBackup)
+      server.close()
+      try {
+        fn()
+      } catch (err) {
+        reject(err)
+      }
+    }
+    /**
+     * The wrapper path types nothing at all, so it only needs the channel to be
+     * up (plus a settle window, since `typed` staying empty is a negative). The
+     * fallback path is done once its `cd` has arrived.
+     */
+    const awaitLanding = (): void => {
+      if (setupWatch !== undefined) return
+      const since = Date.now()
+      setupWatch = setInterval(() => {
+        if (!allowExec && !typed.includes('cd -- ')) return
+        if (Date.now() - since < 250) return
+        done(() => {
+          if (allowExec) {
+            assert.ok(execCommand, 'exec request carried the wrapper')
+            assert.ok(
+              (execCommand as string).includes(`cd -- ${QUOTED} 2>/dev/null`),
+              `cwd quoted into the wrapper: ${execCommand}`
+            )
+            assert.ok(
+              (execCommand as string).includes('exec "${SHELL:-/bin/sh}" -l'),
+              'wrapper hands over to a login shell'
+            )
+            assert.strictEqual(typed, '', 'the wrapper path types nothing into the session')
+          } else {
+            assert.strictEqual(execCommand, null, 'no exec request when the server refuses one')
+            assert.ok(typed.includes(`cd -- ${QUOTED} 2>/dev/null`), `cwd typed instead: ${typed}`)
+          }
+          console.log(`  ok - ${allowExec ? 'exec wrapper' : 'shell fallback'} lands the pane in the inherited cwd`)
+          manager?.destroyAll()
+          resolve()
+        })
+      }, 50)
+    }
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number }
+      const live = new SessionManager(() => undefined)
+      manager = live
+      ;(live as unknown as { sink: (p: unknown) => void }).sink = (p) => {
+        const ev = p as { type: string; data?: string; text?: string; promptId?: string; status?: string }
+        if (ev.type === 'session:output') {
+          output += ev.data ?? ''
+          if (output.includes('CWD_READY')) awaitLanding()
+        }
+        if (ev.type === 'session:prompt') {
+          const t = ev.text ?? ''
+          if (/continue connecting/i.test(t)) live.answerPrompt(ev.promptId as string, 'yes')
+          else if (/^Password for/i.test(t)) live.answerPrompt(ev.promptId as string, 'secret')
+          else live.answerPrompt(ev.promptId as string, '')
+        }
+        if (ev.type === 'session:status' && ev.status === 'error') {
+          done(() => reject(new Error(`cwd flow errored: ${output.slice(0, 300)}`)))
+        }
+      }
+      live.createSsh({
+        kind: 'ssh',
+        target: `127.0.0.1:${addr.port}`,
+        user: 'tester',
+        cols: 80,
+        rows: 24,
+        cwd: CWD
+      })
+    })
+    setTimeout(() => {
+      done(() =>
+        reject(
+          new Error(
+            `cwd flow timed out; exec=${execCommand === null ? 'none' : 'yes'} typed=${JSON.stringify(typed.slice(0, 200))}`
+          )
+        )
+      )
+    }, 10000)
+  })
+}
+
 app.whenReady().then(async () => {
   try {
     testParseTarget()
@@ -606,6 +752,8 @@ app.whenReady().then(async () => {
     await testSessionEnv()
     await testSshKeyboardInteractive()
     await testSshConnectionReuse()
+    await testSshCwd(true)
+    await testSshCwd(false)
     await testSshFlow()
     console.log(`\nALL TESTS PASSED (${passed} assertions)`)
     app.exit(0)

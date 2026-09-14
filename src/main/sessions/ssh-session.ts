@@ -21,6 +21,8 @@ export class SshSession implements Session, SshConnectionClient {
   private size: { cols: number; rows: number }
   private prompts = new Map<string, (v: string) => void>()
   private dead = false
+  /** Directory to land in, inherited from the pane this one was spawned from. */
+  private cwd?: string
 
   constructor(
     id: string,
@@ -31,6 +33,7 @@ export class SshSession implements Session, SshConnectionClient {
     this.id = id
     this.size = { cols: opts.cols, rows: opts.rows }
     this.label = connection.label
+    this.cwd = opts.cwd
   }
 
   /** Open this pane's remote shell channel on the shared transport. */
@@ -100,7 +103,7 @@ export class SshSession implements Session, SshConnectionClient {
   private async openChannel(): Promise<void> {
     let stream: Channel
     try {
-      stream = await this.connection.openChannel(this.size)
+      stream = await this.connection.openChannel(this.size, this.cwd)
     } catch (err) {
       // A dead transport already reported itself via connectionLost(); a live
       // one that refused the channel surfaces the error here.

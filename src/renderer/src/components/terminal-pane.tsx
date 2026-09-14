@@ -632,6 +632,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
               port: pc.port,
               identity: pc.identity,
               password: pc.password,
+              cwd: pc.cwd,
               cols: term.cols,
               rows: term.rows
             }

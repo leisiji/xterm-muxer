@@ -181,6 +181,30 @@ assert.strictEqual(state.tabs[1].panes.get(99)?.sshOpts?.target, 'u@h:2222')
 assert.strictEqual(state.tabs[1].panes.get(99)?.kind, 'ssh')
 ok('reducer: ssh attach keeps sshOpts')
 
+// A panel spawned with an inherited directory seeds cwd at creation, so the
+// chain keeps going even if the shell never reports one of its own (OSC 7).
+state = muxReducer(state, { type: 'cwd', paneId: 99, cwd: '/srv/app' })
+state = muxReducer(state, {
+  type: 'add-pane',
+  tabId: 2,
+  targetPaneId: 99,
+  orientation: 'row',
+  paneId: 100,
+  pendingCreate: { kind: 'ssh', target: 'u@h:2222', cwd: '/srv/app' }
+})
+assert.strictEqual(state.tabs[1].panes.get(100)?.cwd, '/srv/app', 'inherited cwd seeded at creation')
+assert.strictEqual(state.tabs[1].panes.get(99)?.cwd, '/srv/app', 'source pane keeps its cwd')
+let plain: State = muxReducer({ tabs: [], activeTabId: null }, {
+  type: 'open-tab',
+  tabId: 9,
+  paneId: 900,
+  pendingCreate: { kind: 'ssh', target: 'u@h' }
+})
+assert.strictEqual(plain.tabs[0].panes.get(900)?.cwd, null, 'no inherited directory stays null')
+plain = muxReducer(plain, { type: 'cwd', paneId: 900, cwd: '/var/log' })
+assert.strictEqual(plain.tabs[0].panes.get(900)?.cwd, '/var/log', 'OSC 7 still overrides the seed')
+ok('reducer: inherited cwd seeded on new panes')
+
 // closing the only pane closes the tab
 let single: State = muxReducer({ tabs: [], activeTabId: null }, {
   type: 'open-tab',

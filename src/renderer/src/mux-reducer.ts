@@ -51,7 +51,10 @@ export function muxReducer(state: MuxState, action: MuxAction): MuxState {
         sessionId: null,
         label: '',
         title: null,
-        cwd: null,
+        // Seed from the inherited directory so a pane spawned from a pane whose
+        // shell never reports its cwd (a remote shell without OSC 7) still
+        // chains: the next spawn inherits this value instead of nothing.
+        cwd: action.pendingCreate.cwd ?? null,
         dead: false,
         status: null,
         pendingCreate: action.pendingCreate,
@@ -77,7 +80,8 @@ export function muxReducer(state: MuxState, action: MuxAction): MuxState {
         sessionId: null,
         label: '',
         title: null,
-        cwd: null,
+        // See open-tab: seed the inherited directory.
+        cwd: action.pendingCreate.cwd ?? null,
         dead: false,
         status: null,
         pendingCreate: action.pendingCreate,

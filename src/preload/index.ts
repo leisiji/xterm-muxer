@@ -22,6 +22,8 @@ export interface SessionCreateSshOpts {
   port?: number
   identity?: string
   password?: string
+  /** Remote directory to land in, inherited from the pane being spawned from. */
+  cwd?: string
   cols: number
   rows: number
 }

@@ -47,6 +47,13 @@ export interface SshCreateOptions {
   port?: number
   identity?: string
   password?: string
+  /**
+   * Remote directory to land in, inherited from the pane this one was spawned
+   * from. The remote path only makes sense while the source pane talked to the
+   * same host, so the renderer only ever sets it for an inherited SSH target,
+   * and only after that pane's own shell reported one (OSC 7).
+   */
+  cwd?: string
   cols: number
   rows: number
 }

@@ -21,11 +21,11 @@
 | 搜索 | Ctrl+Shift+F 打开浮动搜索框（Enter 下一个 / Shift+Enter 上一个，无底部状态栏） |
 | SSH | Ctrl+Shift+S 打开连接对话框；支持 `user@host[:port]`、`~/.ssh/config`（Host 通配、Include、Match、%token 展开）、known_hosts 校验（含哈希条目）、SHA256 指纹、publickey/password/keyboard-interactive 认证、ServerAlive 保活 |
 | 保存 SSH 配置 | 对话框内可勾选 “Save this connection” 保存 host/user/port/identity 为连接配置；下次打开对话框即列出，一键回填/连接，可删除（密码永不写入磁盘） |
-| SSH 会话继承 | 在 SSH pane 上新建分屏/标签页会复用**同一个已认证的 SSH 连接**（对齐 wezterm `RemoteSshDomain`：一个连接、每个 pane 一条 channel），因此不会再次要求输入密码；配置 `ssh.defaultTarget` 后，启动/新建默认走 SSH 而非本地 shell |
+| SSH 会话继承 | 在 SSH pane 上新建分屏/标签页会复用**同一个已认证的 SSH 连接**（对齐 wezterm `RemoteSshDomain`：一个连接、每个 pane 一条 channel），因此不会再次要求输入密码，并**落在当前 pane 所在的远端目录**；配置 `ssh.defaultTarget` 后，启动/新建默认走 SSH 而非本地 shell |
 | 退出行为 | 会话退出 / SSH 断开时按 `exitBehavior` 自动关闭 pane（默认 `closeOnCleanExit`：正常退出或已连接的会话断开则关闭，连接失败则保留错误信息），最后个 pane 关闭时窗口自动关闭 |
 | 标题 | OSC 0/1/2 标题 + 回退标签（进程名 / user@host），窗口标题 `[idx/count] title` |
 | 窗口 | Windows/Linux 移除原生 File/Edit/View/Window 菜单栏（避免与 Alt 快捷键冲突；macOS 保留标准 app menu）；`Alt+Enter` 切换全屏（隐藏系统标题栏） |
-| cwd 继承 | OSC 7 捕获，新本地标签/分屏继承当前 pane 目录 |
+| cwd 继承 | OSC 7 捕获，新标签/分屏继承当前 pane 的目录；**SSH 也支持**（见下方「SSH 目录继承」），本地会话在 Windows 下受 ConPTY 限制 |
 | 滚动条 | 由 `@xterm/xterm` 6 内置提供（VS Code 的 SmoothScrollableElement），悬浮覆盖、滚动/悬停时自动显隐，配色取主题前景色。宽度固定在 14px，可用终端选项 `overviewRuler.width` 调整（注意该选项会一并启用 overview ruler）。**不占用右侧宽度**：终端铺满整宽（见 `fitFullWidth`） |
 | Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
 | Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
@@ -151,6 +151,30 @@ SSH 参数优先读取 `~/.ssh/config`；`ConnectTimeout`、`ServerAliveInterval
 
 通过 SSH 对话框输入的密码仍会在**内存中保留本次运行期间**，供连接重建时自动重认证（不写入磁盘）；若未提供密码，则由 ssh-agent / 密钥或终端内联提示完成认证。
 
+**SSH 目录继承**：SSH pane 同样跟踪当前目录，在它上面分屏/新建标签页会落在同一目录 —— 与本地一致，
+应用只**消费** OSC 7，不向远端会话注入任何东西（同 wezterm / Windows Terminal：目录由 shell 侧上报，
+终端侧不碰远端 shell）。
+
+- **上报在远端**：需要远端 shell 自己发 OSC 7。这是 shell 侧的配置，**不是本应用做的** —— 可以用现成的，
+  也可以自己加一行：
+  ```sh
+  # ~/.bashrc（远端）
+  __osc7() { printf '\033]7;file://%s%s\033\\' "${HOSTNAME-}" "$PWD"; }
+  PROMPT_COMMAND="__osc7${PROMPT_COMMAND:+;${PROMPT_COMMAND[*]}}"
+  ```
+  zsh 把第二行换成 `precmd_functions+=(__osc7)`；fish / 提示符框架大多自带。也可以直接把
+  [wezterm.sh](https://github.com/wezterm/wezterm/blob/main/assets/shell-integration/wezterm.sh)
+  拷到远端 `source`（没有 `wezterm` 二进制时它自动回退到纯 `printf`，不依赖远端装 wezterm）。
+  验证：远端 `__osc7 | cat -v` 应打出一段 `^[]7;file://<host>/<cwd>^[\`（序列本身不可见）；在本应用里
+  远端 `cd` 之后分屏，新 pane 落在当前目录即可。
+- **落地在本应用**：`cd` 由 exec 包装进程完成，而不是往交互式 shell 里敲命令 —— ssh2 的 `shell`/`exec`
+  都不接受 cwd 参数，所以带 cwd 的新 pane 走 `exec` 通道运行 `cd -- '<cwd>' 2>/dev/null; exec "$SHELL" -l`
+  （对标 wezterm-ssh 的 `cd && exec` 做法）。这行 `cd` 因此既不出现在终端里，也不进远端 history；
+  `-l` 复现 sshd 对普通 shell channel 的登录 shell 语义（`/etc/profile`、`~/.bash_profile` 照常执行）。
+  服务端拒绝 exec 请求时回退为普通 shell + 敲入 `cd`（降级路径，这一行会可见）。
+- **没有上报时会怎样**：远端不发 OSC 7 时 pane 的 cwd 一直是未知，继承不出任何东西 —— 新 pane 的创建路径
+  与 `ssh host` **逐字节相同**（普通 shell channel，不敲任何命令、不改远端环境），落点就是登录目录。
+
 ## 打包
 
 ```bash
@@ -165,7 +189,7 @@ npm run dist:linux    # 本机产出 AppImage
 ## 测试
 
 - `npm run test:unit`：mux 树/ reducer 纯 JS 单测（分屏、折叠、焦点导航、标签生命周期）。
-- `npm run test:sessions`：在 Electron（无窗口）下跑 ssh_config 解析、known_hosts（含哈希条目）、node-pty 本地会话、SSH 端到端流程（主机密钥 TOFU + 认证提示 + 错误路径，连接本机 sshd 验证）。
+- `npm run test:sessions`：在 Electron（无窗口）下跑 ssh_config 解析、known_hosts（含哈希条目）、node-pty 本地会话、SSH 端到端流程（主机密钥 TOFU + 认证提示 + 错误路径，连接本机 sshd 验证）、cwd 继承（exec 包装落地 + 服务端拒绝 exec 时的回退，用内置 ssh2 假服务端验证：命令串里的 `cd` 带正确转义，且包装路径**不向会话写入任何内容**）。
 
 ## 已知限制
 

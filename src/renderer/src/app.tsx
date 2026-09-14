@@ -291,7 +291,18 @@ export function App(): ReactElement {
   function sessionFor(pane: PaneRecord | undefined, fallbackCwd?: string): PendingCreate {
     if (pane?.kind === 'ssh' && pane.sshOpts) {
       const { target, user, port, identity } = pane.sshOpts
-      return { kind: 'ssh', target, user, port, identity, password: sshSecretsRef.current.get(target) }
+      // The inherited target is this very pane's host, so its cwd is a remote
+      // path that means something on the other side. Omitted until the remote
+      // has reported one (OSC 7).
+      return {
+        kind: 'ssh',
+        target,
+        user,
+        port,
+        identity,
+        password: sshSecretsRef.current.get(target),
+        cwd: pane.cwd ?? undefined
+      }
     }
     const target = configRef.current.ssh?.defaultTarget?.trim()
     if (target) {
