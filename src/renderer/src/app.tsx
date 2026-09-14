@@ -25,6 +25,7 @@ const fallbackConfig: RendererConfig = {
   tabBar: { position: 'top' },
   copyOnSelect: true,
   focusFollowsMouse: true,
+  webgl: true,
   ssh: {},
   exitBehavior: 'closeOnCleanExit',
   keys: {}

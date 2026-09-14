@@ -12,6 +12,8 @@ export interface RendererConfig {
   copyOnSelect?: boolean
   /** Focus the pane under the mouse pointer. Default true. */
   focusFollowsMouse?: boolean
+  /** Use the WebGL renderer for panes. Default true (see main/config.ts). */
+  webgl?: boolean
   /** SSH settings. `defaultTarget` makes new sessions SSH instead of local. */
   ssh?: { defaultTarget?: string }
   /** What to do when a session exits (see main/config.ts). */

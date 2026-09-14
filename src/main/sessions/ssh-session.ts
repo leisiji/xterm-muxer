@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { StringDecoder } from 'string_decoder'
 import type { Channel } from 'ssh2'
 import type { OpenedChannel, SshConnection, SshConnectionClient } from './ssh-connection'
 import type { Session, SessionEvents, SessionKind, SessionStatus } from './session'
@@ -133,10 +134,24 @@ export class SshSession implements Session, SshConnectionClient {
     if (opened.size.cols !== this.size.cols || opened.size.rows !== this.size.rows) {
       this.resize(this.size.cols, this.size.rows)
     }
+    // A UTF-8 character does not have to arrive in one piece: ssh2 hands over
+    // whatever the transport delivered, so any character wider than one byte -- a
+    // box-drawing glyph, CJK, an accent, an emoji -- can straddle a `data`
+    // boundary. Decoding each chunk on its own (`d.toString('utf8')`) turned the
+    // halves into replacement characters and lost the character outright, which
+    // is the garbling a fast full-screen program produces: the faster it writes,
+    // the more chunk boundaries it crosses. (Node's own sockets avoid this via
+    // `setEncoding`, and node-pty does the same for local sessions.) The decoder
+    // holds a partial sequence back until the rest of it arrives.
+    const decoder = new StringDecoder('utf8')
     stream.on('data', (d: Buffer) => {
-      if (!this.dead) this.events.onOutput(d.toString('utf8'))
+      if (!this.dead) this.events.onOutput(decoder.write(d))
     })
     stream.on('close', () => {
+      // Flush a trailing partial sequence (a replacement character at worst) so
+      // the last bytes of the channel are not silently dropped.
+      const tail = decoder.end()
+      if (!this.dead && tail) this.events.onOutput(tail)
       if (this.dead) return
       this.dead = true
       this.events.onExit(0)

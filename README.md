@@ -123,6 +123,9 @@ npm run build      # 构建产物到 out/
   // 鼠标移动到哪个 pane 即聚焦它（wezterm pane_focus_follows_mouse，默认 true）。
   // 位置被重发（窗口回到前台）不算移动，见 pointer-move.ts。
   "focusFollowsMouse": true,
+  // 用 WebGL 渲染 pane（默认 true，改动需重启）。设 false 回落 DOM 渲染器，
+  // 用于排查「画面陈旧」这类渲染器问题，见「已知限制 → WebGL 渲染器的陈旧画面」。
+  "webgl": true,
   // 会话退出 / SSH 断开时的行为：close | closeOnCleanExit | hold（默认 closeOnCleanExit）
   //   close            总是关闭 pane
   //   closeOnCleanExit 正常退出(code 0)或曾连接过的会话断开时关闭；
@@ -207,7 +210,9 @@ npm run dist:linux    # 本机产出 AppImage
 
 表现：全屏程序清屏重画后，它没写的格子仍显示上一屏的内容（SSH pane 里就是登录横幅的水印），而 xterm 的 buffer 本身是对的 —— 此时选区/复制出来的内容是干净的，据此可以和「真的丢了清屏序列」区分开。整屏重绘（如 Claude Code 里按 `Ctrl-L`）能恢复正常，因为重绘会覆盖这些格子。
 
-对策：`terminal-pane.tsx` 的 `repaint()` 在 pane 布局完成时、以及 pane 从隐藏恢复可见时（切换标签页 / 取消 zoom / 窗口回到前台）强制 `term.refresh(0, rows-1)`；`onContextLoss` 时 dispose 交回 DOM 渲染器（xterm 官方建议）。若仍偶发，可考虑按社区做法直接不用 WebGL（VS Code 的内置终端就是 canvas/DOM 渲染器，代价是大量输出时的吞吐）。
+对策：`terminal-pane.tsx` 的 `repaint()` 强制 `term.refresh(0, rows-1)`，触发点是**会丢 damage 的那些时刻**：pane 布局完成、pane 从隐藏恢复可见（切换标签页 / 取消 zoom / 窗口回到前台）、以及**程序清屏时** —— 后者最关键：`J`（erase in display）与 `K`（erase in line）用一个返回 `false` 的 CSI handler 挂上（erase 仍由 xterm 正常执行），只用来请求一次合并到同一 tick 的重绘。清屏重画恰好是「画的格子对、擦掉的格子留旧内容」这种表现出现的时机。`onContextLoss` 时 dispose 交回 DOM 渲染器（xterm 官方建议）。
+
+若仍偶发，配置里加 `"webgl": false`（默认 `true`，改动需重启）直接回落 DOM 渲染器 —— 也就是 VS Code 内置终端用的那个，代价是大量输出时的吞吐。这也是判断「画面陈旧到底是不是 WebGL 渲染器造成的」最快的 A/B：关掉后不再出现，就是渲染器的问题。
 
 ### ConPTY 与转义序列（Windows 本地会话）
 

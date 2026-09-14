@@ -592,7 +592,9 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     }
     let webgl: WebglAddon | null = null
     try {
-      if (webglAvailable()) {
+      // `webgl: false` in the config skips the addon entirely and leaves the DOM
+      // renderer in place (see repaint() for why one might).
+      if (config.webgl !== false && webglAvailable()) {
         webgl = new WebglAddon()
         webgl.onContextLoss(() => webgl?.dispose())
         term.loadAddon(webgl)
@@ -628,6 +630,38 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       if (!document.hidden) repaint(term)
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+
+    // The case repaint() exists for, caught where it happens: a program that
+    // clears the screen and draws its own frame over it. That is where a WebGL
+    // renderer which has lost track of its damage gives itself away -- the cells
+    // the program *paints* come out right (their rows changed) while the cells it
+    // only *erased* keep whatever was on screen before, which for an SSH pane is
+    // the login banner's watermark showing through the UI. `J` (erase in display)
+    // and `K` (erase in line) are what a full-screen TUI drives its frames with;
+    // the handlers let xterm apply them as usual (returning `false`) and only ask
+    // for the repaint, coalesced to one per tick so a frame's burst of erases
+    // costs a single repaint, and run on a timer so the erase has been applied by
+    // the time it happens.
+    let eraseRepaint: number | undefined
+    const repaintAfterErase = (): void => {
+      if (eraseRepaint !== undefined) return
+      eraseRepaint = window.setTimeout(() => {
+        eraseRepaint = undefined
+        repaint(term)
+      }, 0)
+    }
+    try {
+      term.parser.registerCsiHandler({ final: 'J' }, () => {
+        repaintAfterErase()
+        return false
+      })
+      term.parser.registerCsiHandler({ final: 'K' }, () => {
+        repaintAfterErase()
+        return false
+      })
+    } catch {
+      /* older xterm */
+    }
 
     term.onData((data: string) => {
       const prompt = promptRef.current
@@ -741,6 +775,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     return () => {
       cancelled = true
       if (selectionTimer !== undefined) window.clearTimeout(selectionTimer)
+      if (eraseRepaint !== undefined) window.clearTimeout(eraseRepaint)
       document.removeEventListener('visibilitychange', onVisibilityChange)
       ro.disconnect()
       const sid = sessionIdRef.current

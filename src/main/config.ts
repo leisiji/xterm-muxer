@@ -41,6 +41,14 @@ export interface AppConfig {
   /** Focus the pane under the mouse pointer (wezterm pane_focus_follows_mouse). Default true. */
   focusFollowsMouse?: boolean
   /**
+   * Render panes with the WebGL addon (default true). The WebGL renderer is the
+   * fast one, but it also has a history of leaving cells stale until something
+   * forces a full repaint of them; setting this to false falls back to the DOM
+   * renderer, which is slower under heavy output but repaints predictably. See
+   * the renderer notes in the README.
+   */
+  webgl?: boolean
+  /**
    * What to do when a session's process exits / an SSH connection drops:
    *   close            always close the pane
    *   closeOnCleanExit close only on a clean exit (code 0), hold on errors (default)
@@ -60,6 +68,7 @@ export const defaultConfig: AppConfig = {
   tabBar: { position: 'top' },
   copyOnSelect: true,
   focusFollowsMouse: true,
+  webgl: true,
   exitBehavior: 'closeOnCleanExit',
   keys: {}
 }

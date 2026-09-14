@@ -723,6 +723,94 @@ function testSshPtySizeRace(): Promise<void> {
 }
 
 /**
+ * Regression: a multi-byte character split across two channel chunks must survive.
+ *
+ * ssh2 hands over whatever the transport delivered, so any character wider than
+ * one byte -- a box-drawing glyph, CJK, an accent -- can straddle a `data`
+ * boundary. Decoding each chunk on its own replaced the halves with U+FFFD and
+ * dropped the character, which is the garbling a fast full-screen program is most
+ * likely to trigger: the faster it writes, the more boundaries it crosses. (fzf
+ * redrawing its box borders as its result list streams in is the reported case.)
+ */
+function testSshUtf8Chunks(): Promise<void> {
+  console.log('SshSession (multi-byte characters split across chunks)')
+  const khBackup = testSshCheck()
+  fs.rmSync(path.join(os.homedir(), '.ssh', 'known_hosts'), { force: true })
+
+  const payload = 'A─ 中文 ✓ é B'
+  const bytes = Buffer.from(payload, 'utf8')
+  const server = new Server({ hostKeys: [utils.generateKeyPairSync('ed25519').private] }, (client) => {
+    client.on('error', () => undefined)
+    client.on('authentication', (ctx) => {
+      if (ctx.method === 'password' && ctx.password === 'secret') ctx.accept()
+      else ctx.reject(['password'])
+    })
+    client.on('ready', () => {
+      client.on('session', (accept) => {
+        const session = accept()
+        session.on('pty', (acceptPty) => acceptPty())
+        session.on('shell', (acceptShell) => {
+          const stream = acceptShell()
+          // Two cuts, each inside a different wide character: ─ spans bytes 1-3
+          // and 中 spans 5-7, so both straddle a chunk boundary.
+          stream.write(Buffer.from(bytes.subarray(0, 2)))
+          setTimeout(() => stream.write(Buffer.from(bytes.subarray(2, 6))), 30)
+          setTimeout(() => stream.write(Buffer.from(bytes.subarray(6))), 60)
+          setTimeout(() => stream.write('\r\nUTF8_DONE\r\n'), 90)
+        })
+      })
+    })
+  })
+
+  return new Promise((resolve, reject) => {
+    let output = ''
+    let finished = false
+    const done = (fn: () => void): void => {
+      if (finished) return
+      finished = true
+      testSshRestore(khBackup)
+      server.close()
+      try {
+        fn()
+      } catch (err) {
+        reject(err)
+      }
+    }
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number }
+      const manager = new SessionManager(() => undefined)
+      ;(manager as unknown as { sink: (p: unknown) => void }).sink = (p) => {
+        const ev = p as { type: string; data?: string; text?: string; promptId?: string; status?: string }
+        if (ev.type === 'session:output') {
+          output += ev.data ?? ''
+          if (!output.includes('UTF8_DONE')) return
+          done(() => {
+            assert.ok(output.includes(payload), `multi-byte characters survived: ${JSON.stringify(output)}`)
+            assert.ok(!output.includes('�'), `no replacement characters: ${JSON.stringify(output)}`)
+            console.log('  ok - multi-byte characters survive chunk splits')
+            manager.destroyAll()
+            resolve()
+          })
+        }
+        if (ev.type === 'session:prompt') {
+          const t = ev.text ?? ''
+          if (/continue connecting/i.test(t)) manager.answerPrompt(ev.promptId as string, 'yes')
+          else if (/^Password for/i.test(t)) manager.answerPrompt(ev.promptId as string, 'secret')
+          else manager.answerPrompt(ev.promptId as string, '')
+        }
+        if (ev.type === 'session:status' && ev.status === 'error') {
+          done(() => reject(new Error(`utf8 flow errored: ${output.slice(0, 200)}`)))
+        }
+      }
+      manager.createSsh({ kind: 'ssh', target: `127.0.0.1:${addr.port}`, user: 'tester', cols: 80, rows: 24 })
+    })
+    setTimeout(() => {
+      done(() => reject(new Error(`utf8 flow timed out; output=${JSON.stringify(output.slice(0, 200))}`)))
+    }, 10000)
+  })
+}
+
+/**
  * cwd inheritance: a pane spawned on an inherited SSH connection lands in the
  * directory its spawning pane was in. The landing `cd` rides in an exec wrapper
  * so it never shows up as a typed command or a history entry; a server that
@@ -880,6 +968,7 @@ app.whenReady().then(async () => {
     await testSshKeyboardInteractive()
     await testSshConnectionReuse()
     await testSshPtySizeRace()
+    await testSshUtf8Chunks()
     await testSshCwd(true)
     await testSshCwd(false)
     await testSshFlow()
