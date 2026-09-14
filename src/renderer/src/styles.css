@@ -285,12 +285,17 @@ body,
   transition: background-color 0.12s ease;
 }
 
+/* The 1px line starts *on* the pane boundary instead of straddling it. Centring
+   it put 0.5px of ink over the previous pane's last character cell, which clipped
+   that glyph whenever the pane's width happened to divide evenly by the cell width
+   (the grid then runs right up to the boundary). Starting on the boundary keeps
+   the ink inside the next pane's 2px leading padding, so neither grid is touched
+   and no width is given up. */
 .divider-row::after {
   top: 0;
   left: 50%;
   width: 1px;
   height: 100%;
-  transform: translateX(-50%);
 }
 
 .divider-col::after {
@@ -298,7 +303,6 @@ body,
   top: 50%;
   width: 100%;
   height: 1px;
-  transform: translateY(-50%);
 }
 
 .divider:hover::after {
@@ -747,8 +751,24 @@ kbd {
 
 /* @xterm/xterm 6 replaced the scrolling `.xterm-viewport` with VS Code's
    SmoothScrollableElement (`.xterm-scrollable-element`), which renders its own
-   overlay scrollbar and colors it from the theme foreground. Nothing to style
-   here; use the `overviewRuler.width` terminal option to change its width. */
+   overlay scrollbar and colors it from the theme foreground. Use the
+   `overviewRuler.width` terminal option to change that one's width.
+
+   `.xterm-viewport` is still in the DOM though, still carrying xterm.css's
+   `overflow-y: scroll` and still absolutely positioned over the whole pane. It
+   has no children, but an element that declares `overflow: scroll` gets a real
+   scrollbar painted regardless -- on Windows that is a classic bar complete with
+   up/down arrow buttons, sitting in the pane's bottom-right corner. It used to
+   be clipped off-screen by the grid overflowing the pane by a couple of pixels;
+   once the fit was corrected the arrow became visible. Keep it suppressed. */
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
 
 /* ---------- copy mode HUD ---------- */
 

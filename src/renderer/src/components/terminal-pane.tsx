@@ -86,42 +86,53 @@ interface QuickLabelItem {
 const IMAGE_STORAGE_LIMIT_MB = 32
 
 /**
- * Fit the terminal to its container, undoing the allowance xterm's FitAddon makes
- * for a scrollbar.
+ * Fit the terminal to the box it actually lives in, correcting two things xterm 6's
+ * FitAddon gets wrong for a tiled pane layout.
  *
- * xterm 6's FitAddon always subtracts a scrollbar width from the available width
- * (`options.overviewRuler?.width || 14`), modelling a scrollbar that takes layout
- * space. The scrollbar xterm 6 actually renders -- VS Code's, via
- * SmoothScrollableElement -- is `position: absolute` and overlays the content, and
- * it stays hidden until you scroll. So the subtraction buys nothing and costs
- * columns: a 700px pane with 7px cells fits 100 columns, but `fit()` reports 98 and
- * lays the grid out 686px wide, leaving a dead 14px strip down the right edge (2
- * columns gone, which clips full-width apps).
+ * 1. It always subtracts a scrollbar width from the available width
+ *    (`options.overviewRuler?.width || 14`), modelling a scrollbar that takes layout
+ *    space. The scrollbar xterm 6 renders -- VS Code's, via SmoothScrollableElement --
+ *    is `position: absolute` and overlays the content, and stays hidden until you
+ *    scroll. The subtraction buys nothing and costs columns: a 700px pane with 7px
+ *    cells fits 100 columns, but `fit()` reports 98 and leaves a dead 14px strip.
  *
- * Re-fit against the width the pane really has. Any failure keeps the addon's
- * result, so a renderer change can at worst cost the columns again, not break fit.
+ * 2. It measures the available space as `getComputedStyle(parent)` minus the
+ *    *element's* padding. This app sets `* { box-sizing: border-box }`, so the
+ *    parent's computed size is its border box: the pane's own 2px padding is counted
+ *    as usable space. Both axes then come out 2px too large whenever the pane's
+ *    border-box extent divides evenly by the cell size, and the grid overruns the
+ *    pane -- the last column/row sliding under the split divider.
+ *
+ * Measuring the terminal element itself sidesteps the box-sizing question entirely:
+ * the element is a block filling its container's content box, so its own box is
+ * exactly the space available. Any failure keeps the addon's result, so a renderer
+ * change can at worst cost a column, not break fitting.
  */
-function fitFullWidth(term: Terminal, fit: FitAddon): void {
+function fitToContainer(term: Terminal, fit: FitAddon): void {
   try {
     fit.fit()
   } catch {
     return // layout not ready yet
   }
-  const cellWidth = (
+  const cell = (
     term as unknown as {
-      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: number } } } } }
+      _core?: {
+        _renderService?: { dimensions?: { css?: { cell?: { width?: number; height?: number } } } }
+      }
     }
-  )._core?._renderService?.dimensions?.css?.cell?.width
+  )._core?._renderService?.dimensions?.css?.cell
   const element = term.element
-  const parent = element?.parentElement
-  if (!cellWidth || !element || !parent) return
+  if (!cell?.width || !cell.height || !element) return
   try {
-    const parentWidth = Math.max(0, parseInt(window.getComputedStyle(parent).width) || 0)
-    const elementStyle = window.getComputedStyle(element)
-    const padding =
-      (parseInt(elementStyle.paddingLeft) || 0) + (parseInt(elementStyle.paddingRight) || 0)
-    const cols = Math.max(2, Math.floor((parentWidth - padding) / cellWidth))
-    if (cols !== term.cols) term.resize(cols, term.rows)
+    const style = window.getComputedStyle(element)
+    const padH = (parseInt(style.paddingLeft) || 0) + (parseInt(style.paddingRight) || 0)
+    const padV = (parseInt(style.paddingTop) || 0) + (parseInt(style.paddingBottom) || 0)
+    const box = element.getBoundingClientRect()
+    // Floor the space before dividing so a fractional layout can never round into
+    // an extra column/row that does not fit.
+    const cols = Math.max(2, Math.floor(Math.floor(box.width - padH) / cell.width))
+    const rows = Math.max(1, Math.floor(Math.floor(box.height - padV) / cell.height))
+    if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows)
   } catch {
     /* keep the addon's result */
   }
@@ -535,12 +546,12 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     }
 
     term.open(container)
-    fitFullWidth(term, fit)
+    fitToContainer(term, fit)
     termRef.current = term
     fitRef.current = fit
 
     const ro = new ResizeObserver(() => {
-      fitFullWidth(term, fit)
+      fitToContainer(term, fit)
       const sid = sessionIdRef.current
       if (sid) void window.api.sessions.resize(sid, term.cols, term.rows)
     })
@@ -683,7 +694,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     term.options.fontSize = config.font.size
     term.options.lineHeight = config.font.lineHeight
     term.options.scrollback = config.scrollback
-    if (fitRef.current) fitFullWidth(term, fitRef.current)
+    if (fitRef.current) fitToContainer(term, fitRef.current)
     const sid = sessionIdRef.current
     if (sid) void window.api.sessions.resize(sid, term.cols, term.rows)
     // eslint-disable-next-line react-hooks/exhaustive-deps
