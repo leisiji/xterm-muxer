@@ -128,6 +128,16 @@ function fitToContainer(term: Terminal, fit: FitAddon): void {
     const padH = (parseInt(style.paddingLeft) || 0) + (parseInt(style.paddingRight) || 0)
     const padV = (parseInt(style.paddingTop) || 0) + (parseInt(style.paddingBottom) || 0)
     const box = element.getBoundingClientRect()
+    // Every tab stays mounted, the inactive ones via `display: none`, and this
+    // also runs for the seconds a pane spends unmounted-but-sized. A hidden
+    // element measures 0x0, and fitting that would shrink the terminal to the
+    // 2x1 minimum -- xterm then reflows its whole buffer at two columns wide,
+    // which loses text, and switching back reflows again from the damaged state.
+    // (The FitAddon misses this only by accident: `getComputedStyle` on a
+    // display:none parent yields 'auto', so its width parses to NaN and it bails.
+    // A rect gives a clean 0 instead, which divides happily.) Leave the size as
+    // it is; the ResizeObserver fires again once the pane has a box.
+    if (box.width <= 0 || box.height <= 0) return
     // Floor the space before dividing so a fractional layout can never round into
     // an extra column/row that does not fit.
     const cols = Math.max(2, Math.floor(Math.floor(box.width - padH) / cell.width))
@@ -723,12 +733,13 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
         ref={containerRef}
         onMouseDown={(e) => {
           onFocus(pane.id)
-          // middle-click paste, right-click paste (wezterm/Windows Terminal style)
+          // middle-click paste, right-click paste (wezterm/Windows Terminal style).
+          // Goes through `Terminal.paste` so line endings are normalized to CR
+          // and bracketed paste is applied -- see pasteClipboard in app.tsx.
           if (e.button === 1 || e.button === 2) {
             e.preventDefault()
             void window.navigator.clipboard.readText().then((t) => {
-              const sid = sessionIdRef.current
-              if (sid && t) void window.api.sessions.write(sid, t)
+              if (t) termRef.current?.paste(t)
             })
           }
         }}

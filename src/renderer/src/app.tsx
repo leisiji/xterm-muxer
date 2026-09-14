@@ -401,10 +401,18 @@ export function App(): ReactElement {
 
   async function pasteClipboard(): Promise<void> {
     const sid = activeSessionId()
-    if (!sid) return
+    const handle = sid ? terminalsRef.current.get(sid) : undefined
+    if (!handle) return
     try {
       const text = await navigator.clipboard.readText()
-      if (text) void window.api.sessions.write(sid, text)
+      // Route through xterm rather than writing the clipboard straight to the
+      // session. `Terminal.paste` normalizes line endings (CRLF/LF -> a lone CR)
+      // and wraps the text in bracketed-paste markers when the application asked
+      // for them. Writing the raw clipboard instead sends CRLF to the pty, and a
+      // Unix tty's ICRNL maps that CR to another NL -- turning every line break
+      // into a blank line -- while the missing brackets make shells run each
+      // pasted line immediately and editors re-indent them.
+      if (text) handle.term.paste(text)
     } catch {
       /* clipboard unavailable */
     }
