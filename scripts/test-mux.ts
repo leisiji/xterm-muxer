@@ -16,6 +16,7 @@ import { muxReducer } from '../src/renderer/src/mux-reducer'
 import { resolveLeaderKey, resolveResizeKey } from '../src/renderer/src/keys'
 import { assignLabels, findMatches, resolveLabel } from '../src/renderer/src/quick-select'
 import type { QuickLine } from '../src/renderer/src/quick-select'
+import { decodeOsc52 } from '../src/renderer/src/osc52'
 import {
   decodeCopyKey,
   emptyCopyState,
@@ -364,5 +365,31 @@ assert.deepStrictEqual(resolveLabel(['a', 'b', 'c'], 'z'), { kind: 'none' })
 assert.deepStrictEqual(resolveLabel(assignLabels(30), 'a'), { kind: 'pending' })
 assert.deepStrictEqual(resolveLabel(assignLabels(30), 'aa'), { kind: 'commit', index: 0 })
 ok('quick select: matches / labels / resolution')
+
+// --- OSC 52 (clipboard writes from the terminal) ---
+// Payload shape as xterm's parser delivers it: `52;` and the terminator stripped.
+const b64 = (s: string): string => Buffer.from(s, 'utf8').toString('base64')
+assert.strictEqual(decodeOsc52(`c;${b64('hello')}`), 'hello')
+// An empty selection target means the clipboard, same as `c`.
+assert.strictEqual(decodeOsc52(`;${b64('hello')}`), 'hello')
+// Non-ASCII survives as UTF-8 rather than being mangled to latin1.
+assert.strictEqual(decodeOsc52(`c;${b64('中文 → ok')}`), '中文 → ok')
+assert.strictEqual(decodeOsc52(`c;${b64('line1\nline2')}`), 'line1\nline2')
+// An empty payload clears the clipboard -- that is a legitimate write, not a no-op.
+assert.strictEqual(decodeOsc52('c;'), '')
+// `?` asks us to *read* the local clipboard back; refused so an SSH peer cannot exfiltrate it.
+assert.strictEqual(decodeOsc52('c;?'), null)
+// Other selections (primary, select, cut buffers 0-7) have no local equivalent.
+assert.strictEqual(decodeOsc52(`p;${b64('x')}`), null)
+assert.strictEqual(decodeOsc52(`s;${b64('x')}`), null)
+assert.strictEqual(decodeOsc52(`0;${b64('x')}`), null)
+// Malformed input is ignored rather than throwing.
+assert.strictEqual(decodeOsc52(b64('no separator')), null)
+assert.strictEqual(decodeOsc52('c;not!valid!base64'), null)
+assert.strictEqual(decodeOsc52(`c;${'A'.repeat(100 * 1024 + 1)}`), null)
+// A truncated UTF-8 sequence still copies what arrived instead of nothing.
+const truncated = Buffer.from([0xe4, 0xb8]).toString('base64') // 2 of the 3 bytes of '中'
+assert.strictEqual(decodeOsc52(`c;${truncated}`), '�')
+ok('osc 52: decode / selection / read refusal')
 
 console.log(`\nMUX TESTS PASSED (${passed} assertions)`)

@@ -41,6 +41,12 @@ export class LocalSession implements Session {
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         XTERM_MUXER: '1',
+        // Programs pick an image protocol off TERM_PROGRAM, and the renderer
+        // carries @xterm/addon-image (iTerm IIP + SIXEL). VSCode's terminal is
+        // xterm.js with the same addon, so its label is the honest one to claim
+        // -- and the only label yazi maps to IIP. Without it yazi falls back to
+        // chafa, which draws no real image.
+        TERM_PROGRAM: 'vscode',
         ...opts.env
       },
       encoding: 'utf8'

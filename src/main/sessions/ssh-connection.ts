@@ -128,10 +128,19 @@ export class SshConnection {
   async openChannel(size: { cols: number; rows: number }): Promise<Channel> {
     await this.ready()
     return new Promise<Channel>((resolve, reject) => {
-      this.client.shell({ cols: size.cols, rows: size.rows, term: 'xterm-256color' }, (err, stream) => {
-        if (err) reject(err)
-        else resolve(stream)
-      })
+      // TERM_PROGRAM is a best-effort env request: sshd only applies it when the
+      // remote ssh_config accepts the name (OpenSSH's AcceptEnv defaults to
+      // LANG/LC_*), and a refusal is silently ignored. When it does land, a
+      // remote yazi picks IIP instead of falling back to chafa, and the size
+      // reports the image addon answers round-trip back over the same channel.
+      this.client.shell(
+        { cols: size.cols, rows: size.rows, term: 'xterm-256color' },
+        { env: { TERM_PROGRAM: 'vscode' } },
+        (err, stream) => {
+          if (err) reject(err)
+          else resolve(stream)
+        }
+      )
     })
   }
 

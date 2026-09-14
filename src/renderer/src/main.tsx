@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import 'xterm/css/xterm.css'
+import '@xterm/xterm/css/xterm.css'
 import './styles.css'
 import { App } from './app'
 

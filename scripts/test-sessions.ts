@@ -263,6 +263,55 @@ function testSessionManager(): Promise<void> {
   })
 }
 
+/**
+ * Terminal-aware tools read the pty env to decide what they may draw. yazi in
+ * particular maps TERM_PROGRAM to an image protocol and falls back to chafa
+ * (no real image) for anything it does not recognise, so the renderer's
+ * @xterm/addon-image support only pays off while this stays 'vscode'.
+ */
+function testSessionEnv(): Promise<void> {
+  console.log('LocalSession (pty env)')
+  return new Promise((resolve, reject) => {
+    const manager = new SessionManager(() => undefined)
+    // Echo through the platform shell rather than spawning a node child: this
+    // harness itself runs under Electron, so process.execPath is electron.exe.
+    // One line, well under the 80-col wrap that would split the values apart.
+    const isWin = process.platform === 'win32'
+    const session = manager.createLocal({
+      kind: 'local',
+      cols: 80,
+      rows: 24,
+      shell: isWin ? defaultShell() : 'sh',
+      args: isWin
+        ? ['/c', 'echo ENVPROBE:%TERM%,%TERM_PROGRAM%,%COLORTERM%']
+        : ['-c', 'echo ENVPROBE:$TERM,$TERM_PROGRAM,$COLORTERM'],
+      cwd: isWin ? os.tmpdir() : '/tmp'
+    })
+
+    let output = ''
+    ;(manager as unknown as { sink: (p: unknown) => void }).sink = (p) => {
+      const ev = p as { type: string; id: string; data?: string }
+      if (ev.type !== 'session:output' || ev.id !== session.id) return
+      output += ev.data ?? ''
+      const line = output.match(/ENVPROBE:([^\r\n]*)/)?.[1]
+      if (!line) return
+      manager.destroyAll()
+      try {
+        // ConPTY tacks an erase-to-end-of-line onto the line, so drop escapes.
+        const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').trim()
+        // term, TERM_PROGRAM, COLORTERM -- in that order.
+        assert.deepStrictEqual(plain.split(','), ['xterm-256color', 'vscode', 'truecolor'])
+      } catch (err) {
+        reject(err)
+        return
+      }
+      ok('pty env carries TERM / TERM_PROGRAM / COLORTERM')
+      resolve()
+    }
+    setTimeout(() => reject(new Error(`env probe timed out, got: ${output.slice(0, 300)}`)), 10000)
+  })
+}
+
 /** Probe a TCP port so tests that need the machine's own sshd can skip cleanly. */
 function portOpen(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -554,6 +603,7 @@ app.whenReady().then(async () => {
     testUpdateConfig()
     testKnownHosts()
     await testSessionManager()
+    await testSessionEnv()
     await testSshKeyboardInteractive()
     await testSshConnectionReuse()
     await testSshFlow()

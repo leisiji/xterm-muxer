@@ -1,11 +1,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent, ReactElement } from 'react'
-import { Terminal } from 'xterm'
-import { FitAddon } from 'xterm-addon-fit'
-import { WebglAddon } from 'xterm-addon-webgl'
-import { SearchAddon } from 'xterm-addon-search'
-import { Unicode11Addon } from 'xterm-addon-unicode11'
+import type { ReactElement } from 'react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
+import { SearchAddon } from '@xterm/addon-search'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { ImageAddon } from '@xterm/addon-image'
 import type { PaneRecord } from '../mux-model'
 import type { RendererConfig, SessionCreateOpts } from '../types'
 import { resolveTheme } from '../theme'
@@ -20,6 +21,7 @@ import {
 } from '../copy-mode'
 import type { CopyAction, CopyCursor, CopyModeState, CopySelectionMode, CopyView } from '../copy-mode'
 import { DEFAULT_QUICK_SELECT_PATTERN, assignLabels, findMatches, resolveLabel } from '../quick-select'
+import { decodeOsc52 } from '../osc52'
 import type { QuickLine } from '../quick-select'
 
 export interface CopyModeHandle {
@@ -73,6 +75,56 @@ interface QuickLabelItem {
   y: number
   w: number
   h: number
+}
+
+/**
+ * Image addon cache size in MB, *per pane*. The addon defaults to 128 MB, which
+ * is fine for a single terminal but multiplies across the panes and tabs a muxer
+ * keeps alive. Previews are a few hundred KB decoded, and eviction is FIFO with a
+ * placeholder left in the scrollback, so 32 MB holds plenty before degrading.
+ */
+const IMAGE_STORAGE_LIMIT_MB = 32
+
+/**
+ * Fit the terminal to its container, undoing the allowance xterm's FitAddon makes
+ * for a scrollbar.
+ *
+ * xterm 6's FitAddon always subtracts a scrollbar width from the available width
+ * (`options.overviewRuler?.width || 14`), modelling a scrollbar that takes layout
+ * space. The scrollbar xterm 6 actually renders -- VS Code's, via
+ * SmoothScrollableElement -- is `position: absolute` and overlays the content, and
+ * it stays hidden until you scroll. So the subtraction buys nothing and costs
+ * columns: a 700px pane with 7px cells fits 100 columns, but `fit()` reports 98 and
+ * lays the grid out 686px wide, leaving a dead 14px strip down the right edge (2
+ * columns gone, which clips full-width apps).
+ *
+ * Re-fit against the width the pane really has. Any failure keeps the addon's
+ * result, so a renderer change can at worst cost the columns again, not break fit.
+ */
+function fitFullWidth(term: Terminal, fit: FitAddon): void {
+  try {
+    fit.fit()
+  } catch {
+    return // layout not ready yet
+  }
+  const cellWidth = (
+    term as unknown as {
+      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: number } } } } }
+    }
+  )._core?._renderService?.dimensions?.css?.cell?.width
+  const element = term.element
+  const parent = element?.parentElement
+  if (!cellWidth || !element || !parent) return
+  try {
+    const parentWidth = Math.max(0, parseInt(window.getComputedStyle(parent).width) || 0)
+    const elementStyle = window.getComputedStyle(element)
+    const padding =
+      (parseInt(elementStyle.paddingLeft) || 0) + (parseInt(elementStyle.paddingRight) || 0)
+    const cols = Math.max(2, Math.floor((parentWidth - padding) / cellWidth))
+    if (cols !== term.cols) term.resize(cols, term.rows)
+  } catch {
+    /* keep the addon's result */
+  }
 }
 
 /** Guard against loading the WebGL renderer where no GL context exists (it
@@ -215,10 +267,6 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
   const fitRef = useRef<FitAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const promptRef = useRef<ActivePrompt | null>(null)
-  const viewportRef = useRef<HTMLElement | null>(null)
-  const scrollbarRef = useRef<HTMLDivElement | null>(null)
-  // Custom overlay scrollbar thumb geometry (percentages of the track).
-  const [scrollThumb, setScrollThumb] = useState<{ top: number; height: number } | null>(null)
 
   // ----- copy mode -----
   const copyStateRef = useRef<CopyModeState>({ ...emptyCopyState })
@@ -441,29 +489,6 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     [exitQuickSelect]
   )
 
-  // Drag the overlay scrollbar thumb / click the track to scroll.
-  const onScrollbarMouseDown = useCallback((e: ReactMouseEvent): void => {
-    const vp = viewportRef.current
-    if (!vp) return
-    e.preventDefault()
-    e.stopPropagation()
-    const track = e.currentTarget as HTMLElement
-    const rect = track.getBoundingClientRect()
-    const maxScroll = vp.scrollHeight - vp.clientHeight
-    const apply = (clientY: number): void => {
-      const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
-      vp.scrollTop = ratio * maxScroll
-    }
-    apply(e.clientY)
-    const onMove = (ev: MouseEvent): void => apply(ev.clientY)
-    const onUp = (): void => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }, [])
-
   // Create the xterm instance and (lazily) the backing session, once per pane.
   useEffect(() => {
     const container = containerRef.current
@@ -490,6 +515,14 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     term.loadAddon(search)
     term.loadAddon(unicode)
     term.unicode.activeVersion = '11'
+    try {
+      // Inline images (iTerm IIP + SIXEL) so yazi and friends can preview
+      // pictures. Guards its own `_core._inputHandler._parser` pokes, but keep
+      // the load defensive: a missing private API must not kill the whole pane.
+      term.loadAddon(new ImageAddon({ storageLimit: IMAGE_STORAGE_LIMIT_MB }))
+    } catch {
+      /* image addon incompatible with this xterm build */
+    }
     let webgl: WebglAddon | null = null
     try {
       if (webglAvailable()) {
@@ -502,74 +535,14 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     }
 
     term.open(container)
-    // xterm reserves scrollbar width and the fit addon subtracts it, leaving a
-    // right-edge gutter. We draw our own overlay scrollbar instead, so tell the
-    // core not to reserve anything and let the grid use the full width.
-    const coreViewport = (term as unknown as { _core?: { viewport?: { scrollBarWidth?: number } } })._core?.viewport
-    if (coreViewport) coreViewport.scrollBarWidth = 0
-    try {
-      fit.fit()
-    } catch {
-      /* layout not ready yet */
-    }
+    fitFullWidth(term, fit)
     termRef.current = term
     fitRef.current = fit
 
-    // Overlay scrollbar: xterm's native bar is hidden (see styles.css); we render
-    // a thumb that is revealed while scrolling and sized from the viewport.
-    const viewport = container.querySelector<HTMLElement>('.xterm-viewport')
-    viewportRef.current = viewport
-    let scrollTimer: number | undefined
-    let thumbFrame: number | undefined
-
-    const updateThumb = (): void => {
-      const el = viewportRef.current
-      if (!el) return
-      const sh = el.scrollHeight
-      const ch = el.clientHeight
-      if (sh <= ch + 1) {
-        setScrollThumb((prev) => (prev === null ? prev : null))
-        return
-      }
-      const height = (ch / sh) * 100
-      const top = (el.scrollTop / sh) * 100
-      setScrollThumb((prev) =>
-        prev && Math.abs(prev.height - height) < 0.05 && Math.abs(prev.top - top) < 0.05 ? prev : { height, top }
-      )
-    }
-    const scheduleThumb = (): void => {
-      if (thumbFrame !== undefined) return
-      thumbFrame = window.requestAnimationFrame(() => {
-        thumbFrame = undefined
-        updateThumb()
-      })
-    }
-    const revealScrollbar = (): void => {
-      const el = scrollbarRef.current
-      if (el) el.classList.add('is-scrolling')
-      if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
-      scrollTimer = window.setTimeout(() => {
-        scrollTimer = undefined
-        scrollbarRef.current?.classList.remove('is-scrolling')
-      }, 800)
-    }
-    const onViewportScroll = (): void => {
-      revealScrollbar()
-      scheduleThumb()
-    }
-    viewport?.addEventListener('scroll', onViewportScroll, { passive: true })
-
-    term.onWriteParsed(() => scheduleThumb())
-
     const ro = new ResizeObserver(() => {
-      try {
-        fit.fit()
-      } catch {
-        /* ignore */
-      }
+      fitFullWidth(term, fit)
       const sid = sessionIdRef.current
       if (sid) void window.api.sessions.resize(sid, term.cols, term.rows)
-      scheduleThumb()
     })
     ro.observe(container)
 
@@ -612,6 +585,13 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     try {
       term.parser.registerOscHandler(7, (d: string) => {
         props.onCwd(pane.id, parseOsc7(d))
+        return true
+      })
+      // OSC 52: let programs (tmux `set-clipboard on`, neovim `clipboard=osc52`,
+      // anything over SSH) copy to the local clipboard. Always on.
+      term.parser.registerOscHandler(52, (d: string) => {
+        const text = decodeOsc52(d)
+        if (text !== null) void navigator.clipboard.writeText(text).catch(() => undefined)
         return true
       })
     } catch {
@@ -668,10 +648,6 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     return () => {
       cancelled = true
       if (selectionTimer !== undefined) window.clearTimeout(selectionTimer)
-      if (scrollTimer !== undefined) window.clearTimeout(scrollTimer)
-      if (thumbFrame !== undefined) window.cancelAnimationFrame(thumbFrame)
-      viewport?.removeEventListener('scroll', onViewportScroll)
-      viewportRef.current = null
       ro.disconnect()
       const sid = sessionIdRef.current
       if (sid) {
@@ -680,9 +656,9 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       }
       // Dispose the WebGL addon while the terminal core is still alive: its
       // teardown recreates a DOM renderer, which fails if it runs during
-      // Terminal.dispose() (xterm-addon-webgl 0.16) and throws inside React's
-      // effect cleanup, unmounting the whole tree. Guard both calls so a
-      // renderer teardown race can never blank the app.
+      // Terminal.dispose() and throws inside React's effect cleanup, unmounting
+      // the whole tree. Guard both calls so a renderer teardown race can never
+      // blank the app.
       try {
         webgl?.dispose()
       } catch {
@@ -707,11 +683,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     term.options.fontSize = config.font.size
     term.options.lineHeight = config.font.lineHeight
     term.options.scrollback = config.scrollback
-    try {
-      fitRef.current?.fit()
-    } catch {
-      /* ignore */
-    }
+    if (fitRef.current) fitFullWidth(term, fitRef.current)
     const sid = sessionIdRef.current
     if (sid) void window.api.sessions.resize(sid, term.cols, term.rows)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -754,18 +726,6 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
           if (config.focusFollowsMouse !== false) onFocus(pane.id)
         }}
       />
-      <div
-        ref={scrollbarRef}
-        className={'term-scrollbar' + (scrollThumb ? ' has-thumb' : '')}
-        onMouseDown={onScrollbarMouseDown}
-      >
-        {scrollThumb && (
-          <div
-            className="term-scrollbar-thumb"
-            style={{ top: `${scrollThumb.top}%`, height: `${scrollThumb.height}%` }}
-          />
-        )}
-      </div>
       {quick && (
         <div className="qs-layer">
           {quick.items.map((it) => (

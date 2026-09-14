@@ -17,7 +17,7 @@
 | 分屏 | 上下/左右分屏（对齐 wezterm Windows 默认键位）、拖拽分隔条调比例、Alt+方向键切换焦点、Ctrl+Shift+Z 放大当前 pane；同一 tab 内非焦点 pane 自动变暗（dim） |
 | Leader 键 | 类似 tmux 的 prefix：`Alt+N` 进入 leader 模式，`-` 上下分屏（vertical）、`Shift+-` 左右分屏（horizontal）、`c` 新建标签页、`x` 关闭当前 pane、`z` 放大/还原 pane、`,` 重命名当前标签页、`n`/`p` 下一个/上一个标签页、`1`-`9` 跳到第 N 个标签页、`h`/`j`/`k`/`l` 切换 pane 焦点、`r` 进入 resize 模式（再用 `h/j/k/l` 调整 pane 大小），2s 无后续按键自动退出 |
 | 快捷键（对齐 wezterm 配置） | `Alt+m` 切回上一个标签页（`ActivateLastTab`）、`Alt+p` 切换到下一个 pane（`ActivatePaneDirection("Next")`）、`Alt+方向键` 按方向切换 pane |
-| 复制粘贴 | 选中自动复制（`copyOnSelect`，默认开启）、Ctrl+Shift+C/V、右键/中键粘贴 |
+| 复制粘贴 | 选中自动复制（`copyOnSelect`，默认开启）、Ctrl+Shift+C/V、右键/中键粘贴；支持 **OSC 52**（tmux `set-clipboard on`、nvim `clipboard=osc52`、SSH 远端复制到本地剪贴板），始终开启，仅实现写方向 —— `?` 读取请求会被拒绝，避免远端反过来取走本地剪贴板。**Windows 本地会话下 ConPTY 会丢弃该序列**，SSH 会话不受影响，见「ConPTY 与转义序列」 |
 | 搜索 | Ctrl+Shift+F 打开浮动搜索框（Enter 下一个 / Shift+Enter 上一个，无底部状态栏） |
 | SSH | Ctrl+Shift+S 打开连接对话框；支持 `user@host[:port]`、`~/.ssh/config`（Host 通配、Include、Match、%token 展开）、known_hosts 校验（含哈希条目）、SHA256 指纹、publickey/password/keyboard-interactive 认证、ServerAlive 保活 |
 | 保存 SSH 配置 | 对话框内可勾选 “Save this connection” 保存 host/user/port/identity 为连接配置；下次打开对话框即列出，一键回填/连接，可删除（密码永不写入磁盘） |
@@ -26,10 +26,11 @@
 | 标题 | OSC 0/1/2 标题 + 回退标签（进程名 / user@host），窗口标题 `[idx/count] title` |
 | 窗口 | Windows/Linux 移除原生 File/Edit/View/Window 菜单栏（避免与 Alt 快捷键冲突；macOS 保留标准 app menu）；`Alt+Enter` 切换全屏（隐藏系统标题栏） |
 | cwd 继承 | OSC 7 捕获，新本地标签/分屏继承当前 pane 目录 |
-| 滚动条 | 自绘悬浮样式（overlay），不占用右侧宽度（终端铺满整宽，nvim 等不会被截断），仅在滚动时显示，停止滚动约 800ms 后淡出，可拖动 |
+| 滚动条 | 由 `@xterm/xterm` 6 内置提供（VS Code 的 SmoothScrollableElement），悬浮覆盖、滚动/悬停时自动显隐，配色取主题前景色。宽度固定在 14px，可用终端选项 `overviewRuler.width` 调整（注意该选项会一并启用 overview ruler）。**不占用右侧宽度**：终端铺满整宽（见 `fitFullWidth`） |
 | Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
 | Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
 | 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标移入哪个 pane 就聚焦它（设置对话框可开关，默认开） |
+| 内联图片 | `@xterm/addon-image`（iTerm IIP + SIXEL），每 pane 32MB 缓存，始终开启。本地会话设 `TERM_PROGRAM=vscode`（yazi 据此选 IIP，否则回退 chafa 无真图），SSH 会话以 env request 尽力传递（受服务端 `AcceptEnv` 限制）。**注意 Windows 本地会话受限**：ConPTY 会丢弃它不实现的转义序列，见下方「ConPTY 与转义序列」 |
 | 配置 | `userData/config.json`（字体、主题、滚动历史、shell、键位、copyOnSelect、focusFollowsMouse、tabBar.position）；`Ctrl+,` 打开设置对话框可实时调整字体/字号/**history limit**/鼠标跟随焦点/标签栏位置（默认 **Maple Mono NF CN**、10000 行、标签栏在顶部） |
 
 ## 架构
@@ -47,7 +48,8 @@ Electron main ── IPC ── renderer (React)
         ├─ mux-model.ts / mux-reducer.ts   (Tab/Pane 状态机)
         ├─ split-view / terminal-pane / tab-bar / ssh-dialog / settings-dialog / overlays（底部状态栏已移除）
         ├─ copy-mode.ts  (vim/wezterm copy mode 纯逻辑，Alt+X)
-        └─ quick-select.ts (wezterm QuickSelect 匹配/标签纯逻辑，Alt+I)
+        ├─ quick-select.ts (wezterm QuickSelect 匹配/标签纯逻辑，Alt+I)
+        └─ osc52.ts  (OSC 52 剪贴板 payload 解码纯逻辑)
         └─ prompt-input（内联提示行编辑, 对标 wezterm LineEditor）
 ```
 
@@ -63,9 +65,12 @@ npm test           # 类型检查 + 单元测试（mux 树）+ 会话层测试
 npm run build      # 构建产物到 out/
 ```
 
-> **代理**：本仓库开发机走代理，`.npmrc` 已配置 `proxy=http://10.31.0.22:8888` 与 `electron_mirror`（npmmirror）。
+> **镜像源**：两个镜像 key 分处两地，因为消费时机不同。
+> `electron_mirror`（npmmirror）留在 `.npmrc`：它在 `npm install` 阶段由 **electron 包自己的 postinstall** 读取，而 npm 只为「正在运行脚本的那个包」注入 `npm_package_config_*`，放进本仓库 package.json 的 `config` 读不到，会静默退回 GitHub。
+> `electron_builder_binaries_mirror` 则放在 package.json 的 `config` 里：它由 `npm run dist:*` 这个根脚本读取，`npm_package_config_*` 是有的。
+> npm 目前对 `.npmrc` 里的 `electron_mirror` 会报一条 "Unknown project config" 警告，下个大版本将失效；届时改用 `ELECTRON_MIRROR` 环境变量（`@electron/get` 同样识别）。
 
-> **原生编译**：node-pty 需要按 Electron ABI 编译。本开发机系统 g++（7.5）不支持 C++20，`.npmrc` 配置了便携版 Python 3.11 与 **zig** 工具链（`scripts/rebuild-native.js` 自动选用）。在普通开发机（Windows + VS Build Tools / Linux + gcc ≥ 9）上，去掉 zig 相关配置后 `npm run rebuild` 即可。
+> **原生编译**：node-pty 需要按 Electron ABI 编译。`scripts/rebuild-native.js` 会自动探测 **zig**（`ZIG_PATH`、`~/zig160/zig`）与 Python（`PYTHON` / `NODE_GYP_FORCE_PYTHON`，或常见安装路径）—— 都不在 `.npmrc` 里配。找不到 zig 就回退默认工具链；此时需要系统编译器支持 C++20（Windows + VS Build Tools 或 Linux + gcc ≥ 9）。
 
 ## 默认键位（对齐 wezterm Windows 默认）
 
@@ -168,3 +173,16 @@ npm run dist:linux    # 本机产出 AppImage
 - `Match exec` / `canonical` 不实现（同 wezterm-ssh）；`ProxyJump` 不实现（同 wezterm）。
 - 搜索为当前 pane 内搜索，未做跨会话。
 - 无自定义键位覆盖 UI（`keys` 配置项预留）。
+
+### ConPTY 与转义序列（Windows 本地会话）
+
+ConPTY 不是一根透传字节的管子：conhost 自己解析子进程的 VT 输出、渲染进屏幕缓冲区，再把「它自己的渲染结果」发给终端。因此**它实现的序列会被规范化后重发，它不实现的序列会被直接丢弃**。
+
+在本机（Windows 10 LTSC 2019 / 17763）用真实 ConPTY 实测：子进程写出的 `OSC 7`（cwd）、`OSC 52`（剪贴板）、`OSC 1337`（iTerm 图片）、`CSI 16t`（单元格尺寸查询）、kitty graphics APC 全部**到达终端时已消失**；`SGR`（如 `ESC[31m`）则以规范化形式 `ESC[0;31m` 重发；`OSC 0/1/2`（标题）由 conhost 实现，能正常透出。`useConpty: false`（winpty）结果相同，`useConptyDll: true`（node-pty 自带 ConPTY 1.23）实测仍未改变——透传还需客户端侧协商。
+
+影响与对策：
+
+- **Windows 本地会话**：任何依赖上述序列的功能都失效 —— yazi 图片预览、OSC 52、以及工具主动上报 cwd。这与应用代码无关，是平台层限制。
+- **SSH 会话不受影响**：字节流走 libssh2，不经过 ConPTY，`OSC 1337`/`OSC 52`/`OSC 7` 都能原样到达。远端 yazi 出图是可行的（前提是服务端 `AcceptEnv` 放行 `TERM_PROGRAM`）。
+- **Linux / macOS**：无 ConPTY，不受此限。
+- 参考：[mintty#1192](https://github.com/mintty/mintty/issues/1192)（结论是「ConPTY 支持 passthrough 之前无解」）、[windows/terminal#19926](https://github.com/microsoft/terminal/issues/19926)（透传带来的光标漂移问题）、[Rio 的 Windows 说明](https://rioterm.com/ko/docs/install/windows)。透传需要 ConPTY 1.22+（Windows Terminal 项目版本），且要由终端侧协商启用。
