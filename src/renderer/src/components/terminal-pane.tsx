@@ -864,6 +864,12 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
         .create(createOpts)
         .then((res) => {
           if (cancelled) {
+            // The pane went away while the session was still being created, so
+            // the unmount path ran without an id and could not clean up after it
+            // -- any output already queued under this id (the login banner, an
+            // SSH handshake) would sit in the app's buffers for the rest of the
+            // run. Close the session and drop that bookkeeping now.
+            props.unregisterTerminal(res.id)
             void window.api.sessions.destroy(res.id)
             return
           }
@@ -911,6 +917,32 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       if (sid) {
         props.unregisterTerminal(sid)
         void window.api.sessions.destroy(sid)
+      }
+      // Hand the WebGL context back before letting go of it. Disposing the addon
+      // removes the canvas and drops the atlas, but the GPU-side memory of the
+      // context itself is only reclaimed whenever Chromium next collects it --
+      // which is what "I closed the tab and the memory never came back" looks
+      // like, and why it is intermittent: nothing in the app (or in the addon,
+      // which never calls loseContext) asks for the release. Losing the context
+      // explicitly makes it immediate, and keeps closed panes from counting
+      // against Chromium's limit of ~16 live contexts per renderer -- hitting
+      // that evicts the oldest context, and the pane that owns it silently falls
+      // back to the DOM renderer.
+      //
+      // The renderer's canvas is found by its context rather than by position:
+      // asking a canvas that already holds a 2D context (the image addon's) for
+      // 'webgl2' returns null instead of creating anything, so only the renderer's
+      // own canvas answers.
+      if (webgl) {
+        try {
+          const canvases = term.element?.querySelectorAll('canvas') ?? []
+          for (const canvas of Array.from(canvases)) {
+            const gl = canvas.getContext('webgl2')
+            gl?.getExtension('WEBGL_lose_context')?.loseContext()
+          }
+        } catch {
+          /* no GL context reachable */
+        }
       }
       // Dispose the WebGL addon while the terminal core is still alive: its
       // teardown recreates a DOM renderer, which fails if it runs during
