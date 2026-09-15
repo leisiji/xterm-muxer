@@ -20,11 +20,11 @@ import {
   selectionRange
 } from '../copy-mode'
 import type { CopyAction, CopyCursor, CopyModeState, CopySelectionMode, CopyView } from '../copy-mode'
-import { DEFAULT_QUICK_SELECT_PATTERN, assignLabels, findMatches, resolveLabel } from '../quick-select'
+import { DEFAULT_QUICK_SELECT_PATTERN, assignLabels, findMatches, matchAtColumn, resolveLabel } from '../quick-select'
 import { pointerMoved } from '../pointer-move'
 import type { PointerPosition } from '../pointer-move'
 import { decodeOsc52 } from '../osc52'
-import type { QuickLine } from '../quick-select'
+import type { QuickLine, QuickMatch } from '../quick-select'
 
 /**
  * The pointer position any pane last saw. Focus follows the mouse, so "did the
@@ -254,6 +254,119 @@ function ensureVisible(term: Terminal, y: number): void {
 }
 
 /**
+ * One buffer line in the shape QuickSelect matches against: the text plus, for
+ * each character, the cell column it starts at (a wide character occupies two
+ * cells and contributes one entry), so a match's column range can be mapped back
+ * from a cell the pointer was over.
+ *
+ * `null` when the line does not exist (an absolute row past the end of the
+ * scrollback).
+ */
+function bufferLine(term: Terminal, absRow: number): QuickLine | null {
+  const line = term.buffer.active.getLine(absRow)
+  if (!line) return null
+  let text = ''
+  const columns: number[] = []
+  for (let x = 0; x < term.cols; x++) {
+    const cell = line.getCell(x)
+    if (!cell || cell.getWidth() === 0) {
+      if (!cell) {
+        text += ' '
+        columns.push(x)
+      }
+      continue
+    }
+    const chars = cell.getChars()
+    if (!chars) {
+      text += ' '
+      columns.push(x)
+      continue
+    }
+    for (let i = 0; i < chars.length; i++) {
+      text += chars[i]
+      columns.push(x)
+    }
+  }
+  return { row: absRow, text, columns }
+}
+
+/**
+ * The QuickSelect token under a mouse event, in buffer coordinates.
+ *
+ * xterm's own mouse-coordinate mapping is used rather than deriving the cell from
+ * the element's rect: it is the same one xterm uses to place its own selection,
+ * so a click cannot land on a different cell here than it does there.
+ */
+function quickMatchAtEvent(term: Terminal, event: MouseEvent): QuickMatch | null {
+  const mouse = (
+    term as unknown as {
+      _core?: {
+        _mouseService?: {
+          getCoords: (
+            ev: MouseEvent,
+            element: HTMLElement,
+            cols: number,
+            rows: number,
+            scrollOffset?: boolean
+          ) => [number, number] | undefined
+        }
+      }
+    }
+  )._core?._mouseService
+  const screen = term.element?.querySelector<HTMLElement>('.xterm-screen')
+  if (!mouse || !screen) return null
+  try {
+    // 1-based [column, viewport row]; `scrollOffset` maps the row into the buffer.
+    const coords = mouse.getCoords(event, screen, term.cols, term.rows, true)
+    if (!coords) return null
+    const line = bufferLine(term, term.buffer.active.viewportY + coords[1] - 1)
+    return line ? matchAtColumn(line, coords[0] - 1) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Show a QuickSelect match as an ordinary selection, and fire the change event
+ * the app's copy-on-select listens to. Same internal poke as the block selection
+ * above -- xterm has no public API for "select exactly these cells" -- but with
+ * the linear selection mode, which is what a word selection is.
+ */
+function selectQuickMatch(term: Terminal, match: QuickMatch): boolean {
+  try {
+    const svc = (
+      term as unknown as {
+        _core?: {
+          _selectionService?: {
+            _model?: {
+              isSelectAllActive: boolean
+              selectionStartLength: number
+              selectionStart?: number[]
+              selectionEnd?: number[]
+            }
+            refresh?: () => void
+            _onSelectionChange?: { fire: () => void }
+          }
+        }
+      }
+    )._core?._selectionService
+    const model = svc?._model
+    if (!svc || !model) return false
+    setSelectionKind(term, 0)
+    model.isSelectAllActive = false
+    model.selectionStartLength = 0
+    model.selectionStart = [match.col, match.row]
+    // End is exclusive, so a match of `width` cells ends at col + width.
+    model.selectionEnd = [match.col + match.width, match.row]
+    svc.refresh?.()
+    svc._onSelectionChange?.fire()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * xterm's selection mode: 0 = linear (char/line), 3 = column (block). Block
  * selection has no public API, so this pokes the internal service (guarded).
  */
@@ -458,32 +571,8 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     const buf = term.buffer.active
     const lines: QuickLine[] = []
     for (let r = 0; r < term.rows; r++) {
-      const abs = buf.viewportY + r
-      const line = buf.getLine(abs)
-      if (!line) continue
-      let text = ''
-      const columns: number[] = []
-      for (let x = 0; x < term.cols; x++) {
-        const cell = line.getCell(x)
-        if (!cell || cell.getWidth() === 0) {
-          if (!cell) {
-            text += ' '
-            columns.push(x)
-          }
-          continue
-        }
-        const chars = cell.getChars()
-        if (!chars) {
-          text += ' '
-          columns.push(x)
-          continue
-        }
-        for (let i = 0; i < chars.length; i++) {
-          text += chars[i]
-          columns.push(x)
-        }
-      }
-      lines.push({ row: abs, text, columns })
+      const line = bufferLine(term, buf.viewportY + r)
+      if (line) lines.push(line)
     }
     const matches = findMatches(lines, DEFAULT_QUICK_SELECT_PATTERN)
     const labels = assignLabels(matches.length)
@@ -631,6 +720,30 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
+    // Double-click picks the token under the pointer with QuickSelect's rules
+    // (see matchAtColumn) instead of xterm's own `wordSeparator` rule, so that
+    // "select the word here" and "pick this match from the overlay" agree: a
+    // path, a URL or a qualified name comes out whole either way.
+    //
+    // xterm runs its word selection from `mousedown` when `detail === 2`, so the
+    // rule is replaced by intercepting that event in the capture phase before it
+    // reaches the terminal -- a `dblclick` listener would be too late, and the
+    // native selection would flash first. Clicking where no token matches falls
+    // through to xterm's behaviour (which selects a whitespace run, if anything).
+    const onMouseDownCapture = (e: MouseEvent): void => {
+      if (e.button !== 0 || e.detail !== 2) return
+      const match = quickMatchAtEvent(term, e)
+      if (!match) return
+      e.preventDefault()
+      e.stopPropagation()
+      // The terminal's own mousedown handler is not going to run, so take over
+      // what it would have done for this click.
+      term.focus()
+      props.onFocus(pane.id)
+      selectQuickMatch(term, match)
+    }
+    container.addEventListener('mousedown', onMouseDownCapture, true)
+
     // The case repaint() exists for, caught where it happens: a program that
     // clears the screen and draws its own frame over it. That is where a WebGL
     // renderer which has lost track of its damage gives itself away -- the cells
@@ -777,6 +890,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       if (selectionTimer !== undefined) window.clearTimeout(selectionTimer)
       if (eraseRepaint !== undefined) window.clearTimeout(eraseRepaint)
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      container.removeEventListener('mousedown', onMouseDownCapture, true)
       ro.disconnect()
       const sid = sessionIdRef.current
       if (sid) {

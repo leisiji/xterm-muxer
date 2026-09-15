@@ -57,6 +57,25 @@ export function findMatches(lines: QuickLine[], pattern: RegExp = DEFAULT_QUICK_
 }
 
 /**
+ * The match covering a cell column on one line, if any.
+ *
+ * Double-click uses this so that picking a word by hand lands on exactly what the
+ * overlay would have picked for that cell -- a path, a URL or a qualified name
+ * comes out whole either way, because there is one set of rules rather than a
+ * regex here and a character class (xterm's own `wordSeparator`) there.
+ */
+export function matchAtColumn(
+  line: QuickLine,
+  col: number,
+  pattern: RegExp = DEFAULT_QUICK_SELECT_PATTERN
+): QuickMatch | null {
+  for (const match of findMatches([line], pattern)) {
+    if (col >= match.col && col < match.col + match.width) return match
+  }
+  return null
+}
+
+/**
  * Labels for `n` matches. Up to 26 matches get a single letter; beyond that a
  * fixed two-character (then three-character) label is used, so no label is a
  * prefix of another (which keeps resolution unambiguous).

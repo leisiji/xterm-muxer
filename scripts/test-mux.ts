@@ -14,7 +14,7 @@ import {
 } from '../src/renderer/src/mux-model'
 import { muxReducer } from '../src/renderer/src/mux-reducer'
 import { resolveLeaderKey, resolveResizeKey } from '../src/renderer/src/keys'
-import { assignLabels, findMatches, resolveLabel } from '../src/renderer/src/quick-select'
+import { assignLabels, findMatches, matchAtColumn, resolveLabel } from '../src/renderer/src/quick-select'
 import type { QuickLine } from '../src/renderer/src/quick-select'
 import { decodeOsc52 } from '../src/renderer/src/osc52'
 import { pointerMoved } from '../src/renderer/src/pointer-move'
@@ -390,6 +390,35 @@ assert.deepStrictEqual(resolveLabel(['a', 'b', 'c'], 'z'), { kind: 'none' })
 assert.deepStrictEqual(resolveLabel(assignLabels(30), 'a'), { kind: 'pending' })
 assert.deepStrictEqual(resolveLabel(assignLabels(30), 'aa'), { kind: 'commit', index: 0 })
 ok('quick select: matches / labels / resolution')
+
+// --- double-click selects by the same rules (no second word-splitting rule) ---
+const codeLine = qline(9, 'in /usr/local/foo.cc:12 call foo_bar(baz)')
+const mAt = (col: number): string | null => matchAtColumn(codeLine, col)?.text ?? null
+// A path is one token, including its slashes and dots -- xterm's own rule (and
+// its `:`-free wordSeparator) would have cut it into pieces.
+assert.strictEqual(mAt(6), '/usr/local/foo.cc')
+assert.strictEqual(mAt(18), '/usr/local/foo.cc')
+// Past the path: `:` separates, so the line number is its own token.
+assert.strictEqual(mAt(22), '12')
+assert.strictEqual(mAt(24), 'call')
+assert.strictEqual(mAt(32), 'foo_bar')
+assert.strictEqual(mAt(38), 'baz')
+assert.strictEqual(mAt(0), 'in')
+// Whitespace matches nothing, so the click falls back to xterm's own behaviour.
+assert.strictEqual(matchAtColumn(codeLine, 23), null)
+assert.strictEqual(matchAtColumn(qline(0, '   '), 1), null)
+// A URL wins over the path alternative, exactly as in the overlay.
+const urlLine = qline(2, 'see https://example.com/a/b now')
+assert.strictEqual(matchAtColumn(urlLine, 20)?.text, 'https://example.com/a/b')
+assert.strictEqual(matchAtColumn(urlLine, 4)?.text, 'https://example.com/a/b')
+assert.strictEqual(matchAtColumn(urlLine, 1)?.text, 'see')
+// Wide characters: the column range covers both cells of a double-width glyph,
+// so a click on either half resolves to the same token.
+const wideLine: QuickLine = { row: 3, text: '中 abc', columns: [0, 2, 3, 4, 5] }
+assert.strictEqual(matchAtColumn(wideLine, 3)?.text, 'abc')
+assert.strictEqual(matchAtColumn(wideLine, 5)?.text, 'abc')
+assert.strictEqual(matchAtColumn(wideLine, 1), null) // trailing half of 中
+ok('quick select: matchAtColumn (double-click token rule)')
 
 // --- OSC 52 (clipboard writes from the terminal) ---
 // Payload shape as xterm's parser delivers it: `52;` and the terminator stripped.
