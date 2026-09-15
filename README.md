@@ -29,6 +29,7 @@
 | 滚动条 | 由 `@xterm/xterm` 6 内置提供（VS Code 的 SmoothScrollableElement），悬浮覆盖、滚动/悬停时自动显隐，配色取主题前景色。宽度固定在 14px，可用终端选项 `overviewRuler.width` 调整（注意该选项会一并启用 overview ruler）。**不占用右侧宽度**：终端铺满整宽（见 `fitFullWidth`） |
 | Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
 | Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
+| 程序连字 | `@xterm/addon-ligatures`（字体 `calt`）：`->` `=>` `!==` `::` `/*` 等按字体连字渲染。默认开（`font.ligatures`，改动需重启）。**只在 WebGL 渲染器下生效**（joined cell 是 WebGL 独有的绘制路径 ⇒ `webgl: false` 时连字失效）；同色区间内才连字，**颜色变化的边界会断开**；光标落在连字区间内或选区状态不一致时该区间不连字（保证光标/选区画得对）。连字只影响可见行的光栅化，**buffer 文本不变** —— 复制、搜索、copy-mode、quick select、双击选词都读 buffer，行为不受影响。细节见下方「程序连字」 |
 | 双击选词 | 双击选中的「词」与 Quick select 用**同一套分词规则**（`matchAtColumn` 复用 `findMatches` 的 pattern）：路径 `/usr/local/foo.cc`、URL、`foo_bar` 都整体选中，`:` 仍是分隔符（所以 `foo.cc:12` 里的行号是独立词）；双击空白处没有匹配项，回退 xterm 自身行为。`copyOnSelect` 为真时会直接复制 |
 | 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标**移动到**哪个 pane 就聚焦它（设置对话框可开关，默认开）。跟随的是「鼠标移动」而不是「鼠标所在位置」：窗口重新回到前台（Alt+Tab 切回、点任务栏）时浏览器会原地重发一次 `mouseenter`/`mousemove`，那不算移动，不会把焦点从正在输入的 pane 抢走；同理，分屏新出现的 pane 即使正好在光标下也不会抢焦点 |
 | 内联图片 | `@xterm/addon-image`（iTerm IIP + SIXEL），每 pane 32MB 缓存，始终开启。本地会话设 `TERM_PROGRAM=vscode`（yazi 据此选 IIP，否则回退 chafa 无真图），SSH 会话以 env request 尽力传递（受服务端 `AcceptEnv` 限制）。**注意 Windows 本地会话受限**：ConPTY 会丢弃它不实现的转义序列，见下方「ConPTY 与转义序列」 |
@@ -113,7 +114,8 @@ npm run build      # 构建产物到 out/
 ```jsonc
 {
   "shell": { "path": "powershell.exe", "args": ["-NoLogo"] }, // 默认 Windows=%ComSpec%(cmd.exe)
-  "font": { "family": "Maple Mono NF CN", "size": 14, "lineHeight": 1.15 }, // 也可用 Ctrl+, 图形化调整
+  // ligatures：程序连字（字体 calt），默认 true；只在 WebGL 渲染器下生效，改动需重启
+  "font": { "family": "Maple Mono NF CN", "size": 14, "lineHeight": 1.15, "ligatures": true }, // 也可用 Ctrl+, 图形化调整
   "theme": { "mode": "system" }, // system | light | dark，可自定义 colors
   "scrollback": 10000, // 滚动历史行数（history limit），也可用 Ctrl+, 调整
   "window": { "width": 1100, "height": 700, "title": "XtermMuxer" },
@@ -204,6 +206,26 @@ npm run dist:linux    # 本机产出 AppImage
 - `Match exec` / `canonical` 不实现（同 wezterm-ssh）；`ProxyJump` 不实现（同 wezterm）。
 - 搜索为当前 pane 内搜索，未做跨会话。
 - 无自定义键位覆盖 UI（`keys` 配置项预留）。
+
+### 程序连字（font.ligatures）
+
+xterm 每个单元格单独取字形，字体自己的 `liga`/`calt` 本来永远不会跨单元格生效。启用方式是用核心提供的 `term.registerCharacterJoiner()`：joiner 返回「哪几列要作为一个整体绘制」，WebGL 渲染器命中后构造 `JoinedCellData`（`combinedData` 就是那串字符），走纹理图集的「组合字符串」光栅化路径 —— **整串一次 `fillText`**，浏览器于是按字体的 `calt` 应用连字。
+
+`@xterm/addon-ligatures` 做的就是这件事，另外它还负责拿到「这个字体有哪些连字」：走 **Local Font Access API**（`navigator.fonts.query()` / `window.queryLocalFonts()`）取字体文件、用 `font-ligatures` 解析 GSUB 表；**拿不到权限或解析失败时退回内置序列表**（Iosevka 的 calt 集合：`-> => <= >= != == === !== :: /* */ <| |> ~~> <!-- +++ …`），所以即使字体读不到，常见连字仍然可用（前提是字体本身有对应连字）。想在开发时确认走的是哪条路：打开 devtools，字体访问失败时 addon 会 `console.error` 打出原因。
+
+接入顺序有两条硬性约束（都在 `terminal-pane.tsx` 的 mount effect 里）：
+
+1. `LigaturesAddon.activate()` 要求 `terminal.element` 已存在 ⇒ 必须 `term.open()` 之后 load（xterm 的 `AddonManager.loadAddon` 是**立即** activate 的，不存在「等 open 再激活」）。
+2. WebGL addon 必须在它**之后**激活，图集才会带上元素的 `font-feature-settings: "calt" on`（addon typings 明确要求）。
+
+已知表现：
+
+- **只有 WebGL 渲染器消费 joiner** ⇒ `"webgl": false` 时连字不生效（joiner 仍注册，但没人绘制）。
+- fg/bg 变化会切断 join 候选区间（core 的 `getJoinedCharacters` 按颜色分段调用 joiner）⇒ **彩色输出跨颜色处会断开连字**，VS Code 同样如此。
+- 光标落在连字区间内、或区间内选区状态不一致时，该区间不合并渲染 ⇒ 光标和选区在任何情况下都画得对。
+- joiner 收到的下标是**字符串下标**，xterm 内部负责映射回列并跳过 width-0 格子 ⇒ 中文/宽字符行无需特殊处理。
+- 纯渲染层特性：不改 buffer，因此复制/搜索/copy-mode/quick select/双击选词都不受影响；也正因为如此**没有单测覆盖**，验证方式是在 pane 里敲 `->`、`=>`、`!==`、`::`、`/*` 看字形是否合并。
+- 依赖体积：addon bundle 约 200KB（含 `font-ligatures`），随 renderer 一起打包。
 
 ### WebGL 渲染器的陈旧画面
 

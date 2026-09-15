@@ -19,7 +19,13 @@ export interface SavedSshHost {
 
 export interface AppConfig {
   shell?: { path?: string; args?: string[] }
-  font: { family?: string; size: number; lineHeight: number }
+  /**
+   * `ligatures` turns on the font's programming ligatures (its `calt` feature)
+   * through the @xterm/addon-ligatures character joiner. Only the WebGL renderer
+   * draws joined cells, so it needs `webgl` left on; changing either needs a
+   * restart. Default true.
+   */
+  font: { family?: string; size: number; lineHeight: number; ligatures?: boolean }
   theme: {
     mode: 'system' | 'light' | 'dark'
     colors?: { background?: string; foreground?: string; cursor?: string; selectionBackground?: string }
@@ -60,7 +66,7 @@ export interface AppConfig {
 }
 
 export const defaultConfig: AppConfig = {
-  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15 },
+  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15, ligatures: true },
   theme: { mode: 'system' },
   ssh: {},
   scrollback: 10000,

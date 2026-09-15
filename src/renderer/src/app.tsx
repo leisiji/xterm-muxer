@@ -18,7 +18,7 @@ import { isKey, resolveLeaderKey, resolveResizeKey } from './keys'
 const initialMux: MuxState = { tabs: [], activeTabId: null }
 
 const fallbackConfig: RendererConfig = {
-  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15 },
+  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15, ligatures: true },
   theme: { mode: 'system' },
   scrollback: 10000,
   window: { width: 1100, height: 700, title: 'XtermMuxer' },

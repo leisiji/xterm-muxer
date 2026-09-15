@@ -4,6 +4,7 @@ import type { ReactElement } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { LigaturesAddon } from '@xterm/addon-ligatures'
 import { SearchAddon } from '@xterm/addon-search'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { ImageAddon } from '@xterm/addon-image'
@@ -679,11 +680,26 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     } catch {
       /* image addon incompatible with this xterm build */
     }
+    term.open(container)
+
+    // Renderer addons go on after `open()` and in this order. Ligatures needs the
+    // element (its activate() throws without one), and the WebGL addon has to be
+    // activated *after* it so the texture atlas is built with the element's
+    // `font-feature-settings` -- that is what makes the font apply its `calt`
+    // ligatures to the joined cell ranges the addon reports. Loading the terminal
+    // font's ligature table happens lazily inside the joiner on its first call.
     let webgl: WebglAddon | null = null
     try {
-      // `webgl: false` in the config skips the addon entirely and leaves the DOM
-      // renderer in place (see repaint() for why one might).
       if (config.webgl !== false && webglAvailable()) {
+        // Joined cells are only ever drawn by the WebGL renderer, so without it
+        // the addon would join ranges nobody consumes.
+        if (config.font.ligatures !== false) {
+          try {
+            term.loadAddon(new LigaturesAddon())
+          } catch {
+            /* ligature addon incompatible with this xterm build */
+          }
+        }
         webgl = new WebglAddon()
         webgl.onContextLoss(() => webgl?.dispose())
         term.loadAddon(webgl)
@@ -692,7 +708,6 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       /* WebGL unavailable -> DOM renderer fallback */
     }
 
-    term.open(container)
     fitToContainer(term, fit)
     termRef.current = term
     fitRef.current = fit

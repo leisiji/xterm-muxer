@@ -1,5 +1,5 @@
 export interface RendererConfig {
-  font: { family?: string; size: number; lineHeight: number }
+  font: { family?: string; size: number; lineHeight: number; ligatures?: boolean }
   theme: {
     mode: 'system' | 'light' | 'dark'
     colors?: { background?: string; foreground?: string; cursor?: string; selectionBackground?: string }
