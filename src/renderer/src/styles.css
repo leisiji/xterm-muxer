@@ -848,3 +848,134 @@ kbd {
   line-height: 1.4;
   border-radius: 3px;
 }
+
+/* ---------- keybindings dialog ---------- */
+
+.keys-modal {
+  width: 620px;
+}
+
+.keys-scroll {
+  max-height: 58vh;
+  overflow-y: auto;
+  margin-bottom: 4px;
+}
+
+.keys-group-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+  margin: 12px 0 6px;
+}
+
+.keys-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+}
+
+.key-row + .key-row {
+  border-top: 1px solid var(--app-border);
+}
+
+.key-row.locked .key-row-label {
+  opacity: 0.7;
+}
+
+.key-row-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A chord chip. Clicking one starts recording; several chips = accepted spellings. */
+.key-cell {
+  font-family: var(--font-family, monospace);
+  font-size: 11px;
+  border: 1px solid var(--app-border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  background: #0b0e14;
+  color: var(--app-fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.key-cell:hover {
+  border-color: var(--app-accent);
+}
+
+.key-cell.recording {
+  border-color: var(--app-accent);
+  color: var(--app-accent);
+}
+
+.key-cell.unbound {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.key-cell.locked {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.key-cell.conflict,
+.key-cell.conflict:hover {
+  border-color: #ff5c57;
+  color: #ff5c57;
+}
+
+.key-row-action {
+  border: none;
+  background: transparent;
+  color: var(--app-fg);
+  opacity: 0.45;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.key-row-action:hover {
+  opacity: 1;
+}
+
+.key-reset:hover {
+  color: var(--app-accent);
+}
+
+.key-clear:hover {
+  color: #ff5c57;
+}
+
+.key-row-note {
+  font-size: 11px;
+  color: #e5c07b;
+  white-space: nowrap;
+}
+
+.key-hint {
+  margin: 0 0 6px;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.key-conflict-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #ff5c57;
+}

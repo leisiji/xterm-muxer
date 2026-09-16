@@ -62,7 +62,19 @@ export interface AppConfig {
    * Closing the last pane of the last tab closes the window.
    */
   exitBehavior?: 'close' | 'closeOnCleanExit' | 'hold'
-  keys: Record<string, string>
+  /**
+   * Keybinding overrides: binding id -> list of chord strings ("Ctrl+Shift+T"), with
+   * an empty list meaning "unbound" and an absent id keeping its built-in default.
+   * Ids are the action ids in renderer/src/keymap.ts; leader key table entries are
+   * namespaced as `leader.<action>`, and the prefix itself is `leader-prefix`.
+   *
+   * Arrays (not single strings) because several defaults have more than one accepted
+   * spelling — Ctrl+Shift+Alt+" and ', or Ctrl+Tab and Ctrl+PageDown — and because
+   * deepMerge below never *removes* a stored key: leaving an id out of a patch would
+   * leave an old override in place, so "reset to default" has to be expressible.
+   * Written by the Keybindings dialog; see renderer/src/keymap.ts for the grammar.
+   */
+  keys: Record<string, string[]>
 }
 
 export const defaultConfig: AppConfig = {

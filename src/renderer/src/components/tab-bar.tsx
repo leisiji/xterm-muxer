@@ -9,6 +9,9 @@ export interface TabBarProps {
   onNewTab: () => void
   onNewSsh: () => void
   onSettings: () => void
+  onKeybindings: () => void
+  /** Already formatted for a tooltip, e.g. ' (Ctrl+Shift+T)'; empty when unbound. */
+  shortcutHints?: { newTab?: string; newSsh?: string; settings?: string; keybindings?: string }
 }
 
 export function TabBar(props: TabBarProps): ReactElement {
@@ -41,13 +44,32 @@ export function TabBar(props: TabBarProps): ReactElement {
         })}
       </div>
       <div className="tab-actions">
-        <button className="tab-action" title="Terminal settings (Ctrl+,)" onClick={props.onSettings}>
+        <button
+          className="tab-action"
+          title={`Keybindings${props.shortcutHints?.keybindings ?? ''}`}
+          onClick={props.onKeybindings}
+        >
+          ⌨
+        </button>
+        <button
+          className="tab-action"
+          title={`Terminal settings${props.shortcutHints?.settings ?? ''}`}
+          onClick={props.onSettings}
+        >
           ⚙
         </button>
-        <button className="tab-action" title="New SSH connection (Ctrl+Shift+S)" onClick={props.onNewSsh}>
+        <button
+          className="tab-action"
+          title={`New SSH connection${props.shortcutHints?.newSsh ?? ''}`}
+          onClick={props.onNewSsh}
+        >
           SSH
         </button>
-        <button className="tab-action" title="New tab (Ctrl+Shift+T)" onClick={props.onNewTab}>
+        <button
+          className="tab-action"
+          title={`New tab${props.shortcutHints?.newTab ?? ''}`}
+          onClick={props.onNewTab}
+        >
           +
         </button>
       </div>

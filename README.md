@@ -1,145 +1,513 @@
 # XtermMuxer
 
-一个基于 **xterm.js + Electron** 的终端模拟器与**本地 terminal multiplexer**，参考 [wezterm](https://github.com/wezterm/wezterm) 的架构与交互实现：
+A terminal emulator and **local terminal multiplexer** built on **xterm.js + Electron**, modelled
+after [wezterm](https://github.com/wezterm/wezterm)'s architecture and interaction model.
 
-- 多标签页 + 分屏（pane 二叉树，默认 50/50）
-- 本地 shell 会话（node-pty，Windows 走 ConPTY）
-- **SSH 连接**（类似 `wezterm ssh`）：内联连接进度、主机密钥 TOFU 确认、交互式认证，全部渲染在终端内
-- 明确**不实现** `wezterm connect` / mux-server 等 tmux 式远程复用功能
-- 优先支持 Windows；用 Electron 打包
+- Tabs and splits (a binary pane tree, 50/50 by default)
+- Local shell sessions through node-pty (ConPTY on Windows)
+- **SSH connections** (like `wezterm ssh`): inline connection progress, host-key TOFU confirmation and
+  interactive authentication, all rendered inside the terminal
+- tmux-style **leader key** for mux commands
+- vim-style **copy mode** and wezterm-style **quick select**
+- Deliberately **not** implementing `wezterm connect` / mux-server style remote multiplexing
+- Windows first; packaged with Electron
 
-## 功能
+This document is the user manual. If you just want to get running, read
+[Getting started](#getting-started) and the [key reference](#key-reference).
 
-| 能力 | 说明 |
+## Contents
+
+- [Requirements](#requirements)
+- [Installing](#installing)
+- [Getting started](#getting-started)
+- [Tabs](#tabs)
+- [Panes and splits](#panes-and-splits)
+- [Selecting, copying and pasting](#selecting-copying-and-pasting)
+- [Searching](#searching)
+- [Scrolling and scrollback](#scrolling-and-scrollback)
+- [Copy mode](#copy-mode)
+- [Quick select](#quick-select)
+- [Word selection by double-click](#word-selection-by-double-click)
+- [Mouse focus follows the pointer](#mouse-focus-follows-the-pointer)
+- [Inline images](#inline-images)
+- [Font ligatures](#font-ligatures)
+- [SSH connections](#ssh-connections)
+- [Session exit behavior](#session-exit-behavior)
+- [Windows and titles](#windows-and-titles)
+- [Settings dialog](#settings-dialog)
+- [Keybindings](#keybindings)
+- [Configuration file](#configuration-file)
+- [Key reference](#key-reference)
+- [Troubleshooting](#troubleshooting)
+- [Known limitations](#known-limitations)
+- [Appendix A: Architecture](#appendix-a-architecture)
+- [Appendix B: Building, running and testing](#appendix-b-building-running-and-testing)
+
+## Requirements
+
+| | |
 |---|---|
-| 标签页 | 顶部标签栏（高度 = 字体大小 × 行高，随字号设置自动调整；新建 / 关闭 / 循环切换 / 未读输出圆点）；Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PageUp·PageDown 循环 |
-| 启动 | 默认**不打开任何 pane**，显示空状态；用 `Ctrl+Shift+T` / 标签栏 `+` 开本地终端，`Ctrl+Shift+S` 连 SSH |
-| 分屏 | 上下/左右分屏（对齐 wezterm Windows 默认键位）、拖拽分隔条调比例、Alt+方向键切换焦点、Ctrl+Shift+Z 放大当前 pane；同一 tab 内非焦点 pane 自动变暗（dim） |
-| Leader 键 | 类似 tmux 的 prefix：`Alt+N` 进入 leader 模式，`-` 上下分屏（vertical）、`Shift+-` 左右分屏（horizontal）、`c` 新建标签页、`x` 关闭当前 pane、`z` 放大/还原 pane、`,` 重命名当前标签页、`n`/`p` 下一个/上一个标签页、`1`-`9` 跳到第 N 个标签页、`h`/`j`/`k`/`l` 切换 pane 焦点、`r` 进入 resize 模式（再用 `h/j/k/l` 调整 pane 大小），2s 无后续按键自动退出 |
-| 快捷键（对齐 wezterm 配置） | `Alt+m` 切回上一个标签页（`ActivateLastTab`）、`Alt+p` 切换到下一个 pane（`ActivatePaneDirection("Next")`）、`Alt+方向键` 按方向切换 pane |
-| 复制粘贴 | 选中自动复制（`copyOnSelect`，默认开启）、Ctrl+Shift+C/V、右键/中键粘贴；支持 **OSC 52**（tmux `set-clipboard on`、nvim `clipboard=osc52`、SSH 远端复制到本地剪贴板），始终开启，仅实现写方向 —— `?` 读取请求会被拒绝，避免远端反过来取走本地剪贴板。**Windows 本地会话下 ConPTY 会丢弃该序列**，SSH 会话不受影响，见「ConPTY 与转义序列」 |
-| 搜索 | Ctrl+Shift+F 打开浮动搜索框（Enter 下一个 / Shift+Enter 上一个，无底部状态栏） |
-| SSH | Ctrl+Shift+S 打开连接对话框；支持 `user@host[:port]`、`~/.ssh/config`（Host 通配、Include、Match、%token 展开）、known_hosts 校验（含哈希条目）、SHA256 指纹、publickey/password/keyboard-interactive 认证、ServerAlive 保活 |
-| 保存 SSH 配置 | 对话框内可勾选 “Save this connection” 保存 host/user/port/identity 为连接配置；下次打开对话框即列出，一键回填/连接，可删除（密码永不写入磁盘） |
-| SSH 会话继承 | 在 SSH pane 上新建分屏/标签页会复用**同一个已认证的 SSH 连接**（对齐 wezterm `RemoteSshDomain`：一个连接、每个 pane 一条 channel），因此不会再次要求输入密码，并**落在当前 pane 所在的远端目录**；配置 `ssh.defaultTarget` 后，启动/新建默认走 SSH 而非本地 shell |
-| 退出行为 | 会话退出 / SSH 断开时按 `exitBehavior` 自动关闭 pane（默认 `closeOnCleanExit`：正常退出或已连接的会话断开则关闭，连接失败则保留错误信息），最后个 pane 关闭时窗口自动关闭 |
-| 标题 | OSC 0/1/2 标题 + 回退标签（进程名 / user@host），窗口标题 `[idx/count] title` |
-| 窗口 | Windows/Linux 移除原生 File/Edit/View/Window 菜单栏（避免与 Alt 快捷键冲突；macOS 保留标准 app menu）；`Alt+Enter` 切换全屏（隐藏系统标题栏） |
-| cwd 继承 | OSC 7 捕获，新标签/分屏继承当前 pane 的目录；**SSH 也支持**（见下方「SSH 目录继承」），本地会话在 Windows 下受 ConPTY 限制 |
-| 滚动条 | 由 `@xterm/xterm` 6 内置提供（VS Code 的 SmoothScrollableElement），悬浮覆盖、滚动/悬停时自动显隐，配色取主题前景色。宽度固定在 14px，可用终端选项 `overviewRuler.width` 调整（注意该选项会一并启用 overview ruler）。**不占用右侧宽度**：终端铺满整宽（见 `fitFullWidth`） |
-| Copy mode | `Alt+X` 进入（对标 wezterm copy_mode / vim）：`hjkl` 移动、`w/b/e` 词移动（`Alt+w/b/e` 步进 5 次）、`H/L/^` 行首/行尾/首个非空、`g/G` 缓冲首/尾、`Ctrl+u/d` 翻页、`v/V/Ctrl+v` 字符/行/块选择、`y` 复制并退出、`/` 搜索、`n/N` 下/上一个匹配、`q`/`Esc` 退出；底部显示 COPY HUD |
-| Quick select | `Alt+I`（wezterm `QuickSelectArgs`）：扫描可见区域，为匹配项叠加字母标签（URL / 路径 / `[\w./-]+`，对齐 wezterm 内置 pattern），输入标签即复制该项并退出，`Esc`/`Ctrl+C` 取消 |
-| 程序连字 | `@xterm/addon-ligatures`（字体 `calt`）：`->` `=>` `!==` `::` `/*` 等按字体连字渲染。默认开（`font.ligatures`，改动需重启）。**只在 WebGL 渲染器下生效**（joined cell 是 WebGL 独有的绘制路径 ⇒ `webgl: false` 时连字失效）；同色区间内才连字，**颜色变化的边界会断开**；光标落在连字区间内或选区状态不一致时该区间不连字（保证光标/选区画得对）。连字只影响可见行的光栅化，**buffer 文本不变** —— 复制、搜索、copy-mode、quick select、双击选词都读 buffer，行为不受影响。细节见下方「程序连字」 |
-| 双击选词 | 双击选中的「词」与 Quick select 用**同一套分词规则**（`matchAtColumn` 复用 `findMatches` 的 pattern）：路径 `/usr/local/foo.cc`、URL、`foo_bar` 都整体选中，`:` 仍是分隔符（所以 `foo.cc:12` 里的行号是独立词）；双击空白处没有匹配项，回退 xterm 自身行为。`copyOnSelect` 为真时会直接复制 |
-| 鼠标跟随焦点 | `pane_focus_follows_mouse`：鼠标**移动到**哪个 pane 就聚焦它（设置对话框可开关，默认开）。跟随的是「鼠标移动」而不是「鼠标所在位置」：窗口重新回到前台（Alt+Tab 切回、点任务栏）时浏览器会原地重发一次 `mouseenter`/`mousemove`，那不算移动，不会把焦点从正在输入的 pane 抢走；同理，分屏新出现的 pane 即使正好在光标下也不会抢焦点 |
-| 内联图片 | `@xterm/addon-image`（iTerm IIP + SIXEL），每 pane 32MB 缓存，始终开启。本地会话设 `TERM_PROGRAM=vscode`（yazi 据此选 IIP，否则回退 chafa 无真图），SSH 会话以 env request 尽力传递（受服务端 `AcceptEnv` 限制）。**注意 Windows 本地会话受限**：ConPTY 会丢弃它不实现的转义序列，见下方「ConPTY 与转义序列」 |
-| 配置 | `userData/config.json`（字体、主题、滚动历史、shell、键位、copyOnSelect、focusFollowsMouse、tabBar.position）；`Ctrl+,` 打开设置对话框可实时调整字体/字号/**history limit**/鼠标跟随焦点/标签栏位置（默认 **Maple Mono NF CN**、10000 行、标签栏在顶部） |
+| OS | Windows 10/11 (primary), Linux, macOS |
+| Runtime | Electron 44 (bundled; nothing to install for packaged builds) |
+| Building from source | Node.js 20+, npm, and a C++20 compiler for node-pty (see [Native rebuilds](#native-rebuilds)) |
+| SSH | A reachable `sshd`, or nothing at all if you only use local shells |
 
-## 架构
+## Installing
 
-```
-Electron main ── IPC ── renderer (React)
-  ├─ SessionManager (对标 wezterm Mux)
-  │    ├─ LocalSession  (node-pty, ConPTY on Windows)
-  │    └─ SshSession    (ssh2 纯 JS, 对标 wezterm-ssh)
-  │         ├─ ssh-connection.ts  按目标复用的连接池 (对标 RemoteSshDomain)
-  │         ├─ ssh-config.ts   ssh_config(5) 解析/匹配
-  │         ├─ ssh-auth.ts     authHandler 交互式认证
-  │         └─ known-hosts.ts  主机密钥校验/写入
-  └─ renderer: tabs → pane 二叉树 → xterm.js 实例
-        ├─ mux-model.ts / mux-reducer.ts   (Tab/Pane 状态机)
-        ├─ split-view / terminal-pane / tab-bar / ssh-dialog / settings-dialog / overlays（底部状态栏已移除）
-        ├─ copy-mode.ts  (vim/wezterm copy mode 纯逻辑，Alt+X)
-        ├─ quick-select.ts (wezterm QuickSelect 匹配/标签纯逻辑，Alt+I)
-        └─ osc52.ts  (OSC 52 剪贴板 payload 解码纯逻辑)
-        └─ prompt-input（内联提示行编辑, 对标 wezterm LineEditor）
-```
-
-数据流：`node-pty / ssh2 流 → session:output → xterm.write()`；键盘 `xterm.onData → session:write`；resize 经 `session:resize`。SSH 的认证/主机密钥提示通过 `session:prompt` 走终端内联输入。
-
-尺寸约定：**pty 的尺寸必须等于 pane 的 grid**。远端 pty 在通道建立时取当时的 grid（认证可能几秒，期间的 fit 不会被漏掉），通道建立后若尺寸又变过，会再补一个 `window-change`；会话 id 就绪后 renderer 也会重新同步一次，所以不存在「pty 以比 pane 小的尺寸启动、页面靠后续重绘才看起来正常」这种情况。
-
-## 开发
+There is no published installer yet. Build from source:
 
 ```bash
-npm install        # 安装依赖；postinstall 会为 Electron 重建原生模块
-npm run dev        # electron-vite 开发模式
-npm run typecheck  # 类型检查
-npm test           # 类型检查 + 单元测试（mux 树）+ 会话层测试
-npm run build      # 构建产物到 out/
+git clone <this repo> xterm-muxer
+cd xterm-muxer
+npm install        # postinstall rebuilds native modules for Electron
+npm run dev        # launches the app in electron-vite dev mode
 ```
 
-> **镜像源**：两个镜像 key 分处两地，因为消费时机不同。
-> `electron_mirror`（npmmirror）留在 `.npmrc`：它在 `npm install` 阶段由 **electron 包自己的 postinstall** 读取，而 npm 只为「正在运行脚本的那个包」注入 `npm_package_config_*`，放进本仓库 package.json 的 `config` 读不到，会静默退回 GitHub。
-> `electron_builder_binaries_mirror` 则放在 package.json 的 `config` 里：它由 `npm run dist:*` 这个根脚本读取，`npm_package_config_*` 是有的。
-> npm 目前对 `.npmrc` 里的 `electron_mirror` 会报一条 "Unknown project config" 警告，下个大版本将失效；届时改用 `ELECTRON_MIRROR` 环境变量（`@electron/get` 同样识别）。
+To produce a distributable package instead, see
+[Packaging](#packaging).
 
-> **原生编译**：node-pty 需要按 Electron ABI 编译。`scripts/rebuild-native.js` 会自动探测 **zig**（`ZIG_PATH`、`~/zig160/zig`）与 Python（`PYTHON` / `NODE_GYP_FORCE_PYTHON`，或常见安装路径）—— 都不在 `.npmrc` 里配。找不到 zig 就回退默认工具链；此时需要系统编译器支持 C++20（Windows + VS Build Tools 或 Linux + gcc ≥ 9）。
+## Getting started
 
-## 默认键位（对齐 wezterm Windows 默认）
+### First launch
 
-| 动作 | 键位 |
+The app starts with **no panes open** — you get an empty state rather than an automatic shell.
+Open something with one of:
+
+| Action | Keys |
 |---|---|
-| 新标签页 | `Ctrl+Shift+T` |
-| 新 SSH 连接 | `Ctrl+Shift+S` |
-| 上下分屏（top/bottom） | `Ctrl+Shift+Alt+'`（即 `"`） |
-| 左右分屏（left/right） | `Ctrl+Shift+Alt+5`（即 `%`） |
-| 关闭焦点 pane（末个则关标签页） | `Ctrl+Shift+W` |
-| 上一个 / 下一个标签页 | `Ctrl+PageUp` / `Ctrl+PageDown`，`Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| 焦点移动 | `Alt+方向键`；`Alt+p` 下一个 pane；`Alt+N` 然后 `h`/`j`/`k`/`l` 按方向切换 pane |
-| 切回上一个标签页 | `Alt+m` |
-| 放大当前 pane | `Ctrl+Shift+Z` |
-| 复制 / 粘贴 | `Ctrl+Shift+C` / `Ctrl+Shift+V` |
-| 搜索 | `Ctrl+Shift+F` |
-| Copy mode | `Alt+X` 进入 / 退出当 pane 的 copy mode |
-| Quick select | `Alt+I` 进入 quick select，输入字母标签复制对应内容 |
-| 设置（字体/字号） | `Ctrl+,` |
-| 全屏（隐藏系统标题栏） | `Alt+Enter` |
-| **Leader 键** | `Alt+N` 进入 leader 模式（屏幕底部浮层显示可用命令，2s 超时） |
-| ├ vertical pane（上下分屏） | `Alt+N` 然后 `-`（tmux `split-window -v`） |
-| ├ horizontal pane（左右分屏） | `Alt+N` 然后 `Shift+-`（tmux `split-window -h`） |
-| ├ 新标签页 | `Alt+N` 然后 `c` |
-| ├ 关闭当前 pane | `Alt+N` 然后 `x` |
-| ├ 放大 / 还原当前 pane | `Alt+N` 然后 `z`（wezterm `TogglePaneZoomState`） |
-| ├ 重命名当前标签页 | `Alt+N` 然后 `,`（wezterm `PromptInputLine`，留空恢复自动标题） |
-| ├ 下一个 / 上一个标签页 | `Alt+N` 然后 `n` / `p` |
-| ├ 按方向切换 pane | `Alt+N` 然后 `h`/`j`/`k`/`l`（`ActivatePaneDirection`） |
-| ├ 调整 pane 大小 | `Alt+N` 然后 `r` 进入 resize 模式，再用 `h`/`j`/`k`/`l` 调整（`Esc` 或 1s 后退出） |
-| └ 跳到第 N 个标签页 | `Alt+N` 然后 `1`..`9`（wezterm `LEADER+1..9` → `ActivateTab`） |
+| New local terminal | `Ctrl+Shift+T`, or the `+` button in the tab bar |
+| New SSH connection | `Ctrl+Shift+S` |
 
-## 配置
+### Your first terminal
 
-`config.json` 位于 `app.getPath('userData')`（Windows: `%APPDATA%\XtermMuxer\config.json`），深合并默认值：
+1. Press `Ctrl+Shift+T`. A local shell appears.
+2. Press `Ctrl+Shift+Alt+'` to split the pane top/bottom, or `Ctrl+Shift+Alt+5` to split it
+   left/right. The new pane inherits the current pane's working directory.
+3. Press `Alt+Arrow` to move focus between panes. The focused pane is drawn at full brightness —
+   unfocused panes in the same tab are dimmed.
+4. Press `Ctrl+,` to open the settings dialog and change the font, font size, history limit,
+   focus-follows-mouse and tab bar position. Changes apply live.
+
+### Your first SSH connection
+
+1. Press `Ctrl+Shift+S`. A connection dialog opens.
+2. Type `user@host`, `user@host:port`, a bare hostname, or a `Host` alias from `~/.ssh/config`.
+3. Tick **Save this connection** if you want it listed next time. Passwords are never written to
+   disk.
+4. Connect. Host-key confirmation, password prompts and keyboard-interactive challenges all appear
+   **inline in the terminal**, not as native dialogs.
+
+See [SSH connections](#ssh-connections) for the full story.
+
+## Tabs
+
+The tab bar sits at the top of the window by default (move it to the bottom in settings, or via
+`tabBar.position`). Its height tracks the font size and line height.
+
+- **New tab**: `Ctrl+Shift+T`, or the `+` button.
+- **Close**: `Ctrl+Shift+W` closes the focused pane; when it is the last pane in the tab, the tab
+  closes.
+- **Switch**: `Ctrl+Tab` / `Ctrl+Shift+Tab`, or `Ctrl+PageDown` / `Ctrl+PageUp` — both cycle.
+- **Jump to tab N**: `Alt+N` then `1`–`9`.
+- **Last tab**: `Alt+m` returns to the tab you came from (`ActivateLastTab`).
+- **Rename**: `Alt+N` then `,` (`PromptInputLine`). Leave it blank to restore the automatic title.
+- **Unread output**: a dot appears on a tab that produced output while it was not focused.
+
+Titles come from OSC 0/1/2 title escapes, falling back to the process name (local) or `user@host`
+(SSH). The window title is `[idx/count] title`.
+
+## Panes and splits
+
+A tab holds a binary tree of panes. Splitting always divides the focused pane 50/50, and you can
+drag the divider afterwards.
+
+| Action | Keys |
+|---|---|
+| Split top/bottom | `Ctrl+Shift+Alt+'` (i.e. `"`), or `Alt+N` then `-` |
+| Split left/right | `Ctrl+Shift+Alt+5` (i.e. `%`), or `Alt+N` then `Shift+-` |
+| Move focus by direction | `Alt+Arrow` |
+| Next pane | `Alt+p` (`ActivatePaneDirection("Next")`) |
+| Focus by direction (leader) | `Alt+N` then `h`/`j`/`k`/`l` |
+| Zoom / unzoom the pane | `Ctrl+Shift+Z`, or `Alt+N` then `z` |
+| Resize | `Alt+N` then `r`, then `h`/`j`/`k`/`l` |
+| Close the pane | `Ctrl+Shift+W`, or `Alt+N` then `x` |
+
+Resize mode exits on `Esc` or after one second without a keypress. Closing the last pane of the
+last tab closes the window.
+
+While a zoom is active, dividers are hidden and the zoomed pane fills the tab.
+
+**Session inheritance for new panes and tabs** follows three rules, in order:
+
+1. If the current pane is an SSH session, the new pane/tab reuses the same authenticated connection.
+2. Otherwise, if `ssh.defaultTarget` is configured, the new pane uses that SSH target.
+3. Otherwise, a local shell.
+
+**Working directory inheritance**: new panes and tabs start in the current pane's directory. This
+works for local sessions (where the shell reports it via OSC 7) and for SSH sessions — see
+[SSH directory inheritance](#ssh-directory-inheritance).
+
+**Sizing contract**: the pty size always equals the pane's character grid. For remote ptys, the
+channel is opened at the grid size current at that moment (authentication can take seconds, and
+fits during it are not lost); if the size changes again after the channel opens, a `window-change`
+is sent. The renderer re-syncs once the session id is ready — so a pty never starts smaller than its
+pane and catches up only by redrawing.
+
+## Selecting, copying and pasting
+
+| Action | Keys |
+|---|---|
+| Copy | `Ctrl+Shift+C` |
+| Paste | `Ctrl+Shift+V`, right-click, or middle-click |
+| Copy on select | Automatic (on by default) |
+
+**Copy on select** is controlled by `copyOnSelect` (default `true`). With it enabled, releasing the
+mouse over a selection puts it straight on the clipboard. Set it to `false` if you prefer to copy
+explicitly with `Ctrl+Shift+C`.
+
+**OSC 52** let remote programs write to your local clipboard. It is always enabled and
+**write-only**: a `?` read request is refused, so a remote host cannot pull your clipboard. This is
+what makes tmux (`set-clipboard on`), nvim (`clipboard=osc52`) and remote copies work over SSH.
+
+> On **Windows local sessions**, ConPTY silently drops OSC 52. SSH sessions are unaffected. See
+> [ConPTY and escape sequences](#windows-local-sessions-conpty-and-escape-sequences).
+
+## Searching
+
+Press `Ctrl+Shift+F` for a floating search box. `Enter` jumps to the next match, `Shift+Enter` to
+the previous one. There is no bottom status bar — search is scoped to the focused pane, not across
+sessions.
+
+## Scrolling and scrollback
+
+Scrolling is provided by the `@xterm/xterm` 6 built-in scrollbar (VS Code's
+`SmoothScrollableElement`): an overlay that appears on hover/scroll and hides itself again, tinted
+from the theme's foreground color.
+
+- **History limit**: `scrollback` in the config, default **10000** lines. Adjustable live in the
+  settings dialog (`Ctrl+,`).
+- **Width**: fixed at 14px by default. The terminal option `overviewRuler.width` can change it —
+  but note that setting it also enables the overview ruler.
+- The scrollbar **does not steal width** from the terminal; the terminal spans the full pane width
+  (`fitFullWidth`).
+
+## Copy mode
+
+`Alt+X` enters copy mode for the focused pane (wezterm's `copy_mode`, vim-flavoured). While it is
+active the pane owns every keystroke, so nothing leaks to the shell. `Alt+X` again leaves it. A
+`COPY` HUD is shown at the bottom of the pane.
+
+| Key | Action |
+|---|---|
+| `h` `j` `k` `l` | Move |
+| `w` `b` `e` | Word motion (`Alt+w`/`b`/`e` steps 5 times) |
+| `H` `L` `^` | Start of line / end of line / first non-blank |
+| `g` `G` | Start / end of the scrollback buffer |
+| `Ctrl+u` `Ctrl+d` | Page up / page down |
+| `v` `V` `Ctrl+v` | Character / line / block selection |
+| `y` | Copy the selection and exit |
+| `/` | Search |
+| `n` `N` | Next / previous match |
+| `q` `Esc` | Exit |
+
+## Quick select
+
+`Alt+I` starts quick select (wezterm's `QuickSelectArgs`). The visible area is scanned and each
+match is overlaid with a letter label. Type a label to copy that item and exit; `Esc` or `Ctrl+C`
+cancels.
+
+The built-in patterns mirror wezterm's: URLs, paths, and `[\w./-]+`. Word selection by double-click
+uses the same pattern set (see below).
+
+## Word selection by double-click
+
+Double-clicking a "word" uses **the same tokenizer as quick select** (`matchAtColumn` reuses the
+pattern from `findMatches`), so paths like `/usr/local/foo.cc`, URLs and `foo_bar` are selected
+whole. `:` remains a separator, so the line number in `foo.cc:12` is a separate word. Double-clicking
+whitespace finds no match and falls back to xterm's own behavior. If `copyOnSelect` is on, the word
+is copied immediately.
+
+## Mouse focus follows the pointer
+
+`focusFollowsMouse` (default on, toggleable in the settings dialog) focuses whichever pane the
+pointer **moves into** — wezterm's `pane_focus_follows_mouse`.
+
+It follows *movement*, not *position*: when the window returns to the foreground (Alt+Tab back, or
+clicking the taskbar) the browser re-emits a `mouseenter`/`mousemove` at the same coordinates. That
+is not a move, so focus is not stolen from the pane you were typing in. Likewise a newly created
+split that happens to appear under the cursor does not grab focus.
+
+## Inline images
+
+`@xterm/addon-image` provides iTerm IIP and SIXEL support, always on, with a 32MB cache per pane.
+
+Local sessions set `TERM_PROGRAM=vscode` so that tools like yazi pick IIP rather than falling back
+to chafa (which produces no real images). SSH sessions forward it via an env request, subject to the
+server's `AcceptEnv`.
+
+> **Windows local sessions are limited here.** ConPTY drops the escape sequences it does not
+> implement, which includes the image protocols. See
+> [ConPTY and escape sequences](#windows-local-sessions-conpty-and-escape-sequences).
+
+## Font ligatures
+
+Programming ligatures (the font's `calt` feature — `->`, `=>`, `!==`, `::`, `/*` and friends) are on
+by default via `font.ligatures`. **Changing this setting requires a restart.**
+
+Ligatures are a rendering-only feature:
+
+- They **only work under the WebGL renderer**. Joined cells are a WebGL-only drawing path, so with
+  `"webgl": false` ligatures silently stop appearing.
+- Joins break at color boundaries: adjacent characters only ligate within a run of identical
+  colors, so colored output breaks ligatures where the color changes (VS Code behaves the same way).
+- A join is not rendered when the cursor falls inside the run or when selection state is
+  inconsistent across it — this guarantees the cursor and selection are always drawn correctly.
+- The buffer text is **never** modified. Copying, searching, copy mode, quick select and
+  double-click word selection all read the buffer and are unaffected.
+
+For how it works under the hood, see
+[How ligatures are wired up](#how-ligatures-are-wired-up).
+
+## SSH connections
+
+### Connecting
+
+Press `Ctrl+Shift+S`. The dialog accepts:
+
+- `user@host`, `user@host:port`, or a bare hostname
+- A `Host` alias, and any of the match/expansion semantics of `~/.ssh/config`
+
+The connection is established with a pure-JS `ssh2` client (mirroring wezterm-ssh), not by shelling
+out to `ssh`. Connection progress, host-key prompts and authentication prompts are rendered
+**inside the terminal pane**.
+
+`~/.ssh/config` is read and honoured, including `Host` wildcards, `Include`, `Match`, and `%token`
+expansion. `ConnectTimeout` and `ServerAliveInterval` / `ServerAliveCountMax` are parsed and mapped
+onto the corresponding ssh2 options. `Match exec` and `canonical` are not implemented (same as
+wezterm-ssh), and **`ProxyJump` is not implemented** (same as wezterm).
+
+### Host key verification
+
+`known_hosts` is checked, including hashed entries. New hosts go through trust-on-first-use: the
+SHA256 fingerprint is shown inline and you confirm it in the terminal. Confirmations are written
+back to `known_hosts`.
+
+### Authentication
+
+Supported methods: `publickey`, `password`, and `keyboard-interactive` (interactive prompts are
+rendered inline). If no password is supplied, authentication falls back to ssh-agent / key files, or
+to the inline prompt.
+
+Passwords typed into the SSH dialog are held **in memory for the lifetime of the run** so that a
+reconnecting session can re-authenticate without asking again. They are **never written to disk**.
+
+### Saved connections
+
+Tick **Save this connection** in the dialog to store host/user/port/identity as a profile. Saved
+profiles are listed the next time you open the dialog — click one to fill the fields or connect
+directly — and can be deleted. Password are never persisted.
+
+### Using SSH as the default
+
+Set `ssh.defaultTarget` in the config and new tabs/panes (and the app's default session) will open
+SSH instead of a local shell. The value can be `user@host[:port]`, a hostname, or a `~/.ssh/config`
+`Host` alias.
+
+### Session inheritance
+
+One SSH target (same user/host/port/identity) gets **exactly one connection**. Once the first pane
+has completed host-key confirmation and authentication, every pane or tab derived from it opens a
+new shell channel on that same connection — **no password prompt and no host-key re-verification**.
+This mirrors wezterm's `RemoteSshDomain` (see `mux/src/ssh.rs`, `spawn_pane`). If the connection
+drops, the next new pane reconnects and re-authenticates, again like wezterm.
+
+On the SSH side this is one connection per target and one channel per pane.
+
+### SSH directory inheritance
+
+An SSH pane tracks its current directory just like a local one, and splitting/tabbing from it lands
+in the same directory. As with wezterm and Windows Terminal, the app only **consumes** OSC 7 — it
+never injects anything into the remote session, and it never touches the remote shell.
+
+**Reporting happens on the remote side.** The remote shell has to emit OSC 7 itself; that is shell
+configuration, not something this app does. Use whatever your prompt framework already provides, or
+add a line:
+
+```sh
+# ~/.bashrc (remote)
+__osc7() { printf '\033]7;file://%s%s\033\\' "${HOSTNAME-}" "$PWD"; }
+PROMPT_COMMAND="__osc7${PROMPT_COMMAND:+;${PROMPT_COMMAND[*]}}"
+```
+
+For zsh, replace the second line with `precmd_functions+=(__osc7)`; fish and most prompt frameworks
+already do this. Alternatively, copy
+[wezterm.sh](https://github.com/wezterm/wezterm/blob/main/assets/shell-integration/wezterm.sh) to
+the remote host and `source` it — with no `wezterm` binary present it falls back to plain `printf`,
+so nothing needs to be installed remotely.
+
+To verify: on the remote host, `__osc7 | cat -v` should print `^[]7;file://<host>/<cwd>^[\` (the
+sequence itself is invisible). Then, in the app, `cd` somewhere and split — the new pane should land
+in that directory.
+
+**Landing happens in this app.** The `cd` is performed by a wrapper process rather than by typing
+into the interactive shell: ssh2's `shell`/`exec` accept no cwd parameter, so a new pane with a
+known cwd uses an `exec` channel running
+`cd -- '<cwd>' 2>/dev/null; exec "$SHELL" -l` (the same `cd && exec` approach as wezterm-ssh). That
+`cd` never appears in the terminal and never lands in the remote history; `-l` reproduces the login
+shell semantics sshd gives an ordinary shell channel, so `/etc/profile` and `~/.bash_profile` still
+run. If the server refuses the exec request, the app falls back to a plain shell plus a typed `cd`
+(a degraded path, where that one line is visible).
+
+**When nothing is reported**, the pane's cwd stays unknown and nothing is inherited: the new pane is
+created **byte-for-byte identically to `ssh host`** — a plain shell channel, no commands typed, no
+remote environment changes — so it lands in the login directory.
+
+## Session exit behavior
+
+When a session's process exits or an SSH connection drops, `exitBehavior` decides what happens to
+the pane:
+
+| Value | Behavior |
+|---|---|
+| `close` | Always close the pane. |
+| `closeOnCleanExit` (default) | Close on a clean exit (code 0), or when a session that had connected disconnects. Keep the pane showing the error when connecting/authenticating failed (never connected). |
+| `hold` | Never close automatically; keep the pane showing "Session ended". |
+
+Closing the last pane of the last tab closes the window.
+
+## Windows and titles
+
+- On Windows and Linux the native File/Edit/View/Window menu bar is removed, so it cannot conflict
+  with `Alt`-based keybindings. macOS keeps its standard app menu.
+- `Alt+Enter` toggles fullscreen, which hides the system title bar.
+- The window title is `[idx/count] title`, where `title` comes from OSC 0/1/2 or the fallback
+  described in [Tabs](#tabs).
+
+## Settings dialog
+
+`Ctrl+,` opens a dialog for live adjustment of:
+
+- Font family, size, and line height
+- History limit (scrollback)
+- Focus follows mouse
+- Tab bar position (top/bottom)
+
+Everything it exposes is written to the config file, so the same settings can be edited by hand.
+
+## Keybindings
+
+`Ctrl+Shift+K`, or the **⌨** button in the tab bar, opens the Keybindings dialog.
+
+Every global shortcut and every leader key command can be remapped. Click a chord, press the new
+keys, then **Apply**.
+
+- Clicking a chord chip starts **recording**. `Escape` cancels the recording (it does not close the
+  dialog); `Backspace` clears the binding, leaving the action unbound — its old key then reaches the
+  shell as ordinary input.
+- **✕** clears one binding, **↺** restores that action's default *including every alternate spelling
+  it has* (see [Chords](#chords)), and **Reset all** restores everything.
+- A **Filter** box narrows the list, which is worth using at ~35 rows.
+
+Recording refuses a key that would break something, and says why in the row:
+
+| Refused | Why |
+|---|---|
+| A bare key with no `Ctrl` or `Alt` | Typing `t` in a shell must not open a tab. Function keys such as `F5` are fine without a modifier. |
+| Bare modifiers, dead keys, keys pressed mid-IME-composition | Waiting for the rest of a chord must not record a half-finished one. |
+| Leader commands on `Ctrl`/`Alt`, or on `1`–`9` | A leader key is a bare key by definition, and the digits are reserved for [jumping to a tab](#leader-key). |
+
+### Conflicts
+
+If two actions end up on the same chord, both rows turn red, a line names the colliding actions, and
+**Apply is disabled** until you resolve it. Two chords count as the same even when they read
+differently:
+
+- `Ctrl+T` and `Cmd+T` — the two are one axis on every platform (see [Chords](#chords)).
+- `Ctrl+Shift+5` and `Ctrl+Shift+%` — the same physical keypress, whether the layout reports the
+  shifted glyph or the base key.
+
+`Ctrl+T` and `Ctrl+Shift+T` are *not* the same chord and never conflict. Leader commands and global
+shortcuts are compared separately, since a global `Ctrl+T` and a leader `t` happen at different
+moments.
+
+### What cannot be remapped
+
+Copy mode's keys, quick select's keys, and the resize sub-mode's `h`/`j`/`k`/`l` are fixed — only the
+chord that *enters* each mode is configurable. The leader `1`–`9` range is shown as a locked row for
+the same reason: it is a range, not a single binding.
+
+### Chords
+
+A chord is written as modifiers plus a key: `Ctrl+Shift+T`, `Alt+ArrowUp`, `Ctrl+,`, `Shift+_`.
+Modifier names are case-insensitive and accepted in any order.
+
+**`Cmd` is recorded as `Ctrl`**, because the two are one axis: a binding that meant "Ctrl but not
+Cmd" is not expressible across platforms.
+
+Several defaults accept more than one spelling, because Shift produces a different character on
+different layouts — `Ctrl+Shift+Alt+"` *and* `Ctrl+Shift+Alt+'` for **Split top/bottom**,
+`Ctrl+Shift+Alt+5` *and* `Ctrl+Shift+Alt+%` for **Split left/right**, and both `Ctrl+Tab` and
+`Ctrl+PageDown` for **Next tab**. Every accepted spelling is shown as its own chip; recording a new
+chord replaces the whole set for that action.
+
+Hand-editing [`keys`](#configuration-file) in `config.json` works as well, but the app reads the
+config at startup, so **restart to pick up a hand edit**. Changes made in the dialog apply
+immediately. Note that no settings file is watched: editing it while the app runs has no effect until
+the next launch.
+
+## Configuration file
+
+The config lives at `app.getPath('userData')/config.json`. On Windows that is
+`%APPDATA%\XtermMuxer\config.json`. It is deep-merged over the defaults, so you only need to write
+the keys you want to change.
 
 ```jsonc
 {
-  "shell": { "path": "powershell.exe", "args": ["-NoLogo"] }, // 默认 Windows=%ComSpec%(cmd.exe)
-  // ligatures：程序连字（字体 calt），默认 true；只在 WebGL 渲染器下生效，改动需重启
-  "font": { "family": "Maple Mono NF CN", "size": 14, "lineHeight": 1.15, "ligatures": true }, // 也可用 Ctrl+, 图形化调整
-  "theme": { "mode": "system" }, // system | light | dark，可自定义 colors
-  "scrollback": 10000, // 滚动历史行数（history limit），也可用 Ctrl+, 调整
+  "shell": { "path": "powershell.exe", "args": ["-NoLogo"] }, // Windows default: %ComSpec% (cmd.exe)
+  // ligatures: programming ligatures (the font's calt feature). Default true.
+  // Only effective under the WebGL renderer; changing it needs a restart.
+  "font": { "family": "Maple Mono NF CN", "size": 14, "lineHeight": 1.15, "ligatures": true },
+  "theme": { "mode": "system" }, // system | light | dark; may also carry custom colors
+  "scrollback": 10000, // history limit in lines; also adjustable with Ctrl+,
   "window": { "width": 1100, "height": 700, "title": "XtermMuxer" },
-  // 标签栏位置：top（默认，窗口顶部）| bottom（窗口底部），也可用 Ctrl+, 调整。
+
+  // Where the tab bar sits: "top" (default) or "bottom". Also adjustable with Ctrl+,.
   "tabBar": { "position": "top" },
-  // 鼠标选中即自动复制到剪贴板（默认 true）；设为 false 则只能用 Ctrl+Shift+C 复制。
+
+  // Copy the selection to the clipboard as soon as it is made (default true).
+  // Set false to copy only with Ctrl+Shift+C.
   "copyOnSelect": true,
-  // 鼠标移动到哪个 pane 即聚焦它（wezterm pane_focus_follows_mouse，默认 true）。
-  // 位置被重发（窗口回到前台）不算移动，见 pointer-move.ts。
+
+  // Focus the pane the pointer moves into (wezterm pane_focus_follows_mouse, default true).
+  // A re-emitted position (window returning to the foreground) is not a move; see pointer-move.ts.
   "focusFollowsMouse": true,
-  // 用 WebGL 渲染 pane（默认 true，改动需重启）。设 false 回落 DOM 渲染器，
-  // 用于排查「画面陈旧」这类渲染器问题，见「已知限制 → WebGL 渲染器的陈旧画面」。
+
+  // Render panes with WebGL (default true, needs a restart). Set false to fall back to the
+  // DOM renderer when diagnosing rendering problems such as stale cells.
   "webgl": true,
-  // 会话退出 / SSH 断开时的行为：close | closeOnCleanExit | hold（默认 closeOnCleanExit）
-  //   close            总是关闭 pane
-  //   closeOnCleanExit 正常退出(code 0)或曾连接过的会话断开时关闭；
-  //                    连接/认证失败（从未连上）则保留 pane 显示错误
-  //   hold             从不自动关闭，保留 pane 显示 “Session ended”
-  // 关闭最后一个 pane 时会同时关闭窗口。
+
+  // What to do when a session exits / an SSH connection drops. Default closeOnCleanExit.
+  //   close             always close the pane
+  //   closeOnCleanExit  close on a clean exit (code 0), or when a connected session drops;
+  //                     hold on connection/authentication failure (never connected)
+  //   hold              never close automatically; keep the pane showing "Session ended"
+  // Closing the last pane also closes the window.
   "exitBehavior": "closeOnCleanExit",
-  // 通过 SSH 对话框保存的连接（password 不落盘）
+
+  // Keybinding overrides: action id -> list of chords. An empty list unbinds the action
+  // and an absent id keeps its built-in default. Leader key table entries are namespaced
+  // as "leader.<action>"; "leader-prefix" is the prefix chord itself. Several defaults
+  // list more than one accepted spelling. Written by the Keybindings dialog (Ctrl+Shift+K).
+  "keys": {
+    "new-tab": ["Ctrl+J"],
+    "toggle-zoom": [],
+    "leader-prefix": ["Ctrl+A"]
+  },
+
+  // Connections saved from the SSH dialog (passwords are never persisted).
   "ssh": {
-    // 设置后，新建标签页 / 分屏 / 启动时的 session 默认走 SSH（而不是本地 shell）。
-    // 值可以是 user@host[:port]、主机名或 ~/.ssh/config 里的 Host 别名。
+    // When set, new tabs / splits / the startup session default to SSH instead of a local shell.
+    // Accepts user@host[:port], a hostname, or a Host alias from ~/.ssh/config.
     "defaultTarget": "deploy@prod.example.com",
     "hosts": [
       { "id": "…", "name": "web", "host": "example.com", "user": "root", "port": 2222, "identity": "~/.ssh/id_ed25519" }
@@ -148,104 +516,299 @@ npm run build      # 构建产物到 out/
 }
 ```
 
-SSH 参数优先读取 `~/.ssh/config`；`ConnectTimeout`、`ServerAliveInterval/CountMax` 等指令被解析并映射到 ssh2 对应选项（对齐 wezterm-ssh）。与 wezterm 一致，**不实现 ProxyJump**。
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `shell.path` / `shell.args` | string / string[] | `%ComSpec%` on Windows | Local shell to launch. |
+| `font.family` | string | `Maple Mono NF CN` | |
+| `font.size` | number | `14` | |
+| `font.lineHeight` | number | `1.15` | |
+| `font.ligatures` | boolean | `true` | WebGL-only; needs restart. |
+| `theme.mode` | `system` \| `light` \| `dark` | `system` | Custom `colors` may be supplied. |
+| `scrollback` | number | `10000` | History limit in lines. |
+| `window.width` / `height` / `title` | number / number / string | `1100` / `700` / `XtermMuxer` | |
+| `tabBar.position` | `top` \| `bottom` | `top` | |
+| `copyOnSelect` | boolean | `true` | |
+| `focusFollowsMouse` | boolean | `true` | |
+| `webgl` | boolean | `true` | Needs restart. |
+| `exitBehavior` | `close` \| `closeOnCleanExit` \| `hold` | `closeOnCleanExit` | |
+| `ssh.defaultTarget` | string | — | Makes SSH the default session type. |
+| `ssh.hosts` | array | `[]` | Saved profiles from the SSH dialog. |
+| `ssh.connectTimeout`, `ssh.serverAliveInterval`, `ssh.serverAliveCountMax` | number | from `~/.ssh/config` | Mapped onto ssh2 options. |
+| `keys` | object | `{}` | Keybinding overrides: action id → list of chords. `[]` unbinds, an absent id keeps its default, and a value that cannot be parsed is reported in the dialog and ignored. See [Keybindings](#keybindings). |
 
-**新建 pane/tab 的会话继承规则**：
+## Key reference
 
-1. 当前 pane 是 SSH → 新 pane/tab 继承同一 SSH 连接（同一 host/identity）；
-2. 否则若配置了 `ssh.defaultTarget` → 使用该默认 SSH 目标；
-3. 否则使用本地 shell。
+These tables list the **defaults**, which mirror wezterm's Windows defaults. Every binding in both
+of them can be changed in the [Keybindings dialog](#keybindings); copy mode, quick select and the
+resize sub-mode keep their fixed keys.
 
-同一个 SSH 目标（user/host/port/identity 相同）只会建立**一条**连接：首次 pane 完成主机密钥确认与认证后，后续继承出的分屏/标签页直接在该连接上打开新的 shell channel，**不再要求输入密码或重新校验主机密钥**（对齐 wezterm 的 `RemoteSshDomain`，见 `mux/src/ssh.rs` 的 `spawn_pane`）。连接断开后，下一个新 pane 会重新连接并再次认证（同 wezterm）。
+### Direct bindings
 
-通过 SSH 对话框输入的密码仍会在**内存中保留本次运行期间**，供连接重建时自动重认证（不写入磁盘）；若未提供密码，则由 ssh-agent / 密钥或终端内联提示完成认证。
+| Action | Keys |
+|---|---|
+| New tab | `Ctrl+Shift+T` |
+| New SSH connection | `Ctrl+Shift+S` |
+| Split top/bottom | `Ctrl+Shift+Alt+'` (i.e. `"`) |
+| Split left/right | `Ctrl+Shift+Alt+5` (i.e. `%`) |
+| Close focused pane (or tab) | `Ctrl+Shift+W` |
+| Previous / next tab | `Ctrl+PageUp` / `Ctrl+PageDown`, `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Focus movement | `Alt+Arrow` |
+| Next pane | `Alt+p` |
+| Previous tab | `Alt+m` (`ActivateLastTab`) |
+| Zoom the focused pane | `Ctrl+Shift+Z` |
+| Copy / paste | `Ctrl+Shift+C` / `Ctrl+Shift+V` |
+| Search | `Ctrl+Shift+F` |
+| Copy mode | `Alt+X` |
+| Quick select | `Alt+I` |
+| Settings | `Ctrl+,` |
+| Keybindings dialog | `Ctrl+Shift+K` |
+| Fullscreen (hides the title bar) | `Alt+Enter` |
 
-**SSH 目录继承**：SSH pane 同样跟踪当前目录，在它上面分屏/新建标签页会落在同一目录 —— 与本地一致，
-应用只**消费** OSC 7，不向远端会话注入任何东西（同 wezterm / Windows Terminal：目录由 shell 侧上报，
-终端侧不碰远端 shell）。
+### Leader key
 
-- **上报在远端**：需要远端 shell 自己发 OSC 7。这是 shell 侧的配置，**不是本应用做的** —— 可以用现成的，
-  也可以自己加一行：
-  ```sh
-  # ~/.bashrc（远端）
-  __osc7() { printf '\033]7;file://%s%s\033\\' "${HOSTNAME-}" "$PWD"; }
-  PROMPT_COMMAND="__osc7${PROMPT_COMMAND:+;${PROMPT_COMMAND[*]}}"
-  ```
-  zsh 把第二行换成 `precmd_functions+=(__osc7)`；fish / 提示符框架大多自带。也可以直接把
-  [wezterm.sh](https://github.com/wezterm/wezterm/blob/main/assets/shell-integration/wezterm.sh)
-  拷到远端 `source`（没有 `wezterm` 二进制时它自动回退到纯 `printf`，不依赖远端装 wezterm）。
-  验证：远端 `__osc7 | cat -v` 应打出一段 `^[]7;file://<host>/<cwd>^[\`（序列本身不可见）；在本应用里
-  远端 `cd` 之后分屏，新 pane 落在当前目录即可。
-- **落地在本应用**：`cd` 由 exec 包装进程完成，而不是往交互式 shell 里敲命令 —— ssh2 的 `shell`/`exec`
-  都不接受 cwd 参数，所以带 cwd 的新 pane 走 `exec` 通道运行 `cd -- '<cwd>' 2>/dev/null; exec "$SHELL" -l`
-  （对标 wezterm-ssh 的 `cd && exec` 做法）。这行 `cd` 因此既不出现在终端里，也不进远端 history；
-  `-l` 复现 sshd 对普通 shell channel 的登录 shell 语义（`/etc/profile`、`~/.bash_profile` 照常执行）。
-  服务端拒绝 exec 请求时回退为普通 shell + 敲入 `cd`（降级路径，这一行会可见）。
-- **没有上报时会怎样**：远端不发 OSC 7 时 pane 的 cwd 一直是未知，继承不出任何东西 —— 新 pane 的创建路径
-  与 `ssh host` **逐字节相同**（普通 shell channel，不敲任何命令、不改远端环境），落点就是登录目录。
+`Alt+N` arms leader mode — the same idea as tmux's prefix key. A floating overlay at the bottom of
+the screen lists the available commands, and leader mode times out after 2 seconds without a
+keypress.
 
-## 打包
+Once armed, the leader takes the **next key, whatever it is**: an unlisted key cancels the mode and
+is swallowed rather than reaching the shell. That includes keys that are otherwise global shortcuts —
+`Alt+N` then `Alt+m` cancels, it does not jump to the last tab. (Before the keybindings work those
+three chords leaked through and left leader mode armed, which made the overlay's hint a lie.)
 
-```bash
-npm run pack          # electron-vite build + electron-builder --dir（本机平台）
-npm run dist:win      # 在 Windows 上产出 NSIS 安装包
-npm run dist:linux    # 本机产出 AppImage
+Only the bare modifier keydowns (`Shift`, `Ctrl`, `Alt`) pass through, so that a chord like
+`Shift+-` — which arrives as `Shift` first, then `_` — can complete without cancelling the mode.
+
+| After `Alt+N`, press | Action |
+|---|---|
+| `-` | Split top/bottom (tmux `split-window -v`) |
+| `Shift+-` | Split left/right (tmux `split-window -h`) |
+| `c` | New tab |
+| `x` | Close the focused pane |
+| `z` | Zoom / unzoom the pane (wezterm `TogglePaneZoomState`) |
+| `,` | Rename the current tab (wezterm `PromptInputLine`; blank restores the automatic title) |
+| `n` / `p` | Next / previous tab |
+| `1`–`9` | Jump to tab N (wezterm `LEADER+1..9` → `ActivateTab`) |
+| `h` / `j` / `k` / `l` | Focus the pane left / down / up / right (`ActivatePaneDirection`) |
+| `r` | Enter resize mode, then use `h`/`j`/`k`/`l` (`Esc` or 1s timeout exits) |
+
+## Troubleshooting
+
+### Stale content under the WebGL renderer
+
+The WebGL renderer (`@xterm/addon-webgl`, enabled when `webglAvailable()` detects support, otherwise
+falling back to the DOM renderer) has an upstream family of bugs where the texture atlas or
+individual cells go stale until something forces a full repaint
+([xtermjs/xterm.js#6042](https://github.com/xtermjs/xterm.js/pull/6042) and nearby atlas-reset
+reports). Some of them **do not fire `onContextLoss`**, so there is no event to react to.
+
+**Symptom**: after a full-screen program clears and redraws, cells it did not write still show the
+previous screen's content (in an SSH pane, for example, a watermark of the login banner) — while
+xterm's buffer is correct. A useful way to tell this apart from genuinely missing clear sequences is
+that selections and copies come out clean. A full repaint (for instance `Ctrl-L` in Claude Code)
+restores the display, because the repaint overwrites those cells.
+
+**What the app does about it**: `repaint()` in `terminal-pane.tsx` forces
+`term.refresh(0, rows-1)`. It is triggered at the moments that lose damage — pane layout
+completion, a pane becoming visible again (tab switch, un-zooming, window returning to the
+foreground), and, most importantly, **when a program clears the screen**. For the last one, the `J`
+(erase in display) and `K` (erase in line) handlers are attached with a CSI handler that returns
+`false` (so xterm still performs the erase normally) purely to request one repaint coalesced into
+the same tick. A clear-and-redraw is exactly the moment this bug shows up. On `onContextLoss` the
+addon is disposed and the DOM renderer takes over, as xterm recommends.
+
+**If it still happens**, set `"webgl": false` in the config (default `true`, needs a restart) to
+fall back to the DOM renderer — the one VS Code's built-in terminal uses — at the cost of throughput
+under heavy output. This is also the fastest A/B test for whether stale content is a renderer
+problem: if it stops happening with WebGL off, the renderer is the cause.
+
+### Windows local sessions: ConPTY and escape sequences
+
+ConPTY is not a transparent byte pipe. conhost parses the child process's VT output, renders it into
+its own screen buffer, and sends *its own rendering* to the terminal. Sequences it implements are
+re-emitted in normalized form; **sequences it does not implement are dropped**.
+
+Measured against a real ConPTY on Windows 10 LTSC 2019 (17763), the following never reach the
+terminal at all when written by a child process: `OSC 7` (cwd), `OSC 52` (clipboard), `OSC 1337`
+(iTerm images), `CSI 16t` (cell size query), and kitty graphics APC. `SGR` (e.g. `ESC[31m`) is
+re-emitted in normalized form as `ESC[0;31m`. `OSC 0/1/2` (title) is implemented by conhost and
+comes through fine. `useConpty: false` (winpty) gives the same result, and `useConptyDll: true`
+(node-pty's bundled ConPTY 1.23) did not change it either — passthrough also requires client-side
+negotiation.
+
+**What this means**:
+
+- **Windows local sessions**: anything depending on those sequences does not work — yazi image
+  previews, OSC 52, and tools reporting their own cwd. This is a platform limitation, not an
+  application bug.
+- **SSH sessions are unaffected**: bytes travel over libssh2 and never pass through ConPTY, so
+  `OSC 1337`, `OSC 52` and `OSC 7` arrive intact. Remote yazi images do work, provided the server's
+  `AcceptEnv` allows `TERM_PROGRAM`.
+- **Linux / macOS**: no ConPTY, no limitation.
+
+References: [mintty#1192](https://github.com/mintty/mintty/issues/1192) (the conclusion being that
+there is no fix until ConPTY supports passthrough),
+[windows/terminal#19926](https://github.com/microsoft/terminal/issues/19926) (cursor drift caused by
+passthrough), and [Rio's Windows notes](https://rioterm.com/ko/docs/install/windows). Passthrough
+requires ConPTY 1.22+ (the Windows Terminal project version) and has to be negotiated by the
+terminal.
+
+### Ligatures do not appear
+
+Check, in order:
+
+1. `font.ligatures` is `true`, and you have restarted since changing it.
+2. `webgl` is `true` — only the WebGL renderer consumes character joiners. If WebGL was unavailable
+   at startup the app fell back to the DOM renderer and ligatures are invisible.
+3. The font actually has the ligatures you are looking for, and the characters are in the same
+   color run (color boundaries break joins).
+4. The cursor is not inside the join and the selection state is uniform across it.
+
+### Diagnosing which font-ligature path is active
+
+`@xterm/addon-ligatures` either obtains the font's ligature list via the **Local Font Access API**
+(`navigator.fonts.query()` / `window.queryLocalFonts()`) and parses the GSUB table with
+`font-ligatures`, or falls back to a built-in sequence table (Iosevka's calt set: `-> => <= >= != ==
+=== !== :: /* */ <| |> ~~> <!-- +++ …`). So common ligatures still work even when the font file
+cannot be read. Open devtools to see which path was taken — the addon logs `console.error` with the
+reason when font access fails.
+
+## Known limitations
+
+- No tmux-style remote multiplexing (`wezterm connect` / mux-server).
+- `Match exec` and `canonical` are not implemented (same as wezterm-ssh). `ProxyJump` is not
+  implemented (same as wezterm).
+- Search is scoped to the focused pane; it does not span sessions.
+- Copy mode's keys, quick select's keys, the resize sub-mode's `h`/`j`/`k`/`l`, and the leader `1`–`9`
+  digit range cannot be remapped, only the chord that enters each mode. See
+  [Keybindings](#what-cannot-be-remapped).
+- WebGL renderer can show stale cells — see
+  [Stale content](#stale-content-under-the-webgl-renderer).
+- On Windows local sessions ConPTY drops several escape sequences — see
+  [ConPTY and escape sequences](#windows-local-sessions-conpty-and-escape-sequences).
+
+## Appendix A: Architecture
+
+```
+Electron main ── IPC ── renderer (React)
+  ├─ SessionManager (analogous to wezterm's Mux)
+  │    ├─ LocalSession  (node-pty, ConPTY on Windows)
+  │    └─ SshSession    (ssh2, pure JS; analogous to wezterm-ssh)
+  │         ├─ ssh-connection.ts  connection pool keyed by target (like RemoteSshDomain)
+  │         ├─ ssh-config.ts      ssh_config(5) parsing/matching
+  │         ├─ ssh-auth.ts        authHandler interactive authentication
+  │         └─ known-hosts.ts     host key verification / writing
+  └─ renderer: tabs → pane binary tree → xterm.js instances
+        ├─ mux-model.ts / mux-reducer.ts   (Tab/Pane state machine)
+        ├─ keymap.ts      (binding tables, chord grammar, conflicts, key routing)
+        ├─ split-view / terminal-pane / tab-bar / ssh-dialog / settings-dialog / overlays
+        ├─ copy-mode.ts   (vim/wezterm copy mode logic, Alt+X)
+        ├─ quick-select.ts (wezterm QuickSelect matching/labeling logic, Alt+I)
+        ├─ osc52.ts       (OSC 52 clipboard payload decoding)
+        └─ prompt-input    (inline prompt line editing, analogous to wezterm's LineEditor)
 ```
 
-- Windows 安装包需在 **Windows 机器**上构建（node-pty 的 Windows 二进制必须针对 Electron ABI 在目标平台编译；`electron-builder.yml` 已配 `npmRebuild: true`）。
-- 图标由 `scripts/make-icon.js` 生成到 `build/icon.png`，electron-builder 自动派生 .ico。
+Data flow: `node-pty / ssh2 streams → session:output → xterm.write()`; keyboard input goes
+`xterm.onData → session:write`; resizes go through `session:resize`. SSH authentication and host-key
+prompts use `session:prompt` for inline input in the terminal.
 
-## 测试
+### How ligatures are wired up
 
-- `npm run test:unit`：mux 树/ reducer 纯 JS 单测（分屏、折叠、焦点导航、标签生命周期）。
-- `npm run test:sessions`：在 Electron（无窗口）下跑 ssh_config 解析、known_hosts（含哈希条目）、node-pty 本地会话、SSH 端到端流程（主机密钥 TOFU + 认证提示 + 错误路径，连接本机 sshd 验证）、cwd 继承（exec 包装落地 + 服务端拒绝 exec 时的回退，用内置 ssh2 假服务端验证：命令串里的 `cd` 带正确转义，且包装路径**不向会话写入任何内容**）、pty 尺寸跟随 pane（认证期间与「请求已发出、回复未回」两个窗口的 resize 都不能丢）。
+xterm takes a glyph per cell, so a font's `liga`/`calt` features would never apply across cells. The
+enablement path is the core's `term.registerCharacterJoiner()`: a joiner returns *which columns must
+be drawn as a unit*, and the WebGL renderer, on a hit, builds `JoinedCellData` (`combinedData` being
+that run of characters) and takes the atlas's "combined string" rasterization path — a **single
+`fillText` for the whole run**, at which point the browser applies the font's `calt`.
 
-## 已知限制
+That is what `@xterm/addon-ligatures` does, plus obtaining the font's ligature set as described in
+[Troubleshooting](#diagnosing-which-font-ligature-path-is-active).
 
-- 不做 tmux 式远程复用（`wezterm connect` / mux-server）。
-- `Match exec` / `canonical` 不实现（同 wezterm-ssh）；`ProxyJump` 不实现（同 wezterm）。
-- 搜索为当前 pane 内搜索，未做跨会话。
-- 无自定义键位覆盖 UI（`keys` 配置项预留）。
+Two ordering constraints are hard requirements, both in the mount effect of `terminal-pane.tsx`:
 
-### 程序连字（font.ligatures）
+1. `LigaturesAddon.activate()` requires `terminal.element` to exist, so it must be loaded after
+   `term.open()` (xterm's `AddonManager.loadAddon` activates **immediately**; there is no "wait for
+   open, then activate").
+2. The WebGL addon must be activated **after** it, so that the atlas picks up the element's
+   `font-feature-settings: "calt" on` (required by the addon's typings).
 
-xterm 每个单元格单独取字形，字体自己的 `liga`/`calt` 本来永远不会跨单元格生效。启用方式是用核心提供的 `term.registerCharacterJoiner()`：joiner 返回「哪几列要作为一个整体绘制」，WebGL 渲染器命中后构造 `JoinedCellData`（`combinedData` 就是那串字符），走纹理图集的「组合字符串」光栅化路径 —— **整串一次 `fillText`**，浏览器于是按字体的 `calt` 应用连字。
+Additional behavior worth knowing:
 
-`@xterm/addon-ligatures` 做的就是这件事，另外它还负责拿到「这个字体有哪些连字」：走 **Local Font Access API**（`navigator.fonts.query()` / `window.queryLocalFonts()`）取字体文件、用 `font-ligatures` 解析 GSUB 表；**拿不到权限或解析失败时退回内置序列表**（Iosevka 的 calt 集合：`-> => <= >= != == === !== :: /* */ <| |> ~~> <!-- +++ …`），所以即使字体读不到，常见连字仍然可用（前提是字体本身有对应连字）。想在开发时确认走的是哪条路：打开 devtools，字体访问失败时 addon 会 `console.error` 打出原因。
+- Only the WebGL renderer consumes joiners, so with `"webgl": false` ligatures do not render (the
+  joiner is still registered; nothing draws it).
+- Foreground/background changes split the candidate run (core calls the joiner per color segment),
+  so **colored output breaks ligatures at color changes**, exactly as in VS Code.
+- A run is not joined when the cursor falls inside it or when selection state is inconsistent across
+  it, which keeps the cursor and selection correct in all cases.
+- The indices the joiner receives are **string indices**; xterm maps them back to columns and skips
+  zero-width cells, so CJK and wide-character lines need no special handling.
+- It is a pure rendering feature: the buffer is untouched, so copying, searching, copy mode, quick
+  select and double-click word selection are unaffected. That also means there is **no unit test
+  coverage** — the way to verify is to type `->`, `=>`, `!==`, `::`, `/*` in a pane and watch the
+  glyphs merge.
+- Dependency weight: the addon bundle is roughly 200KB (including `font-ligatures`) and ships with
+  the renderer.
 
-接入顺序有两条硬性约束（都在 `terminal-pane.tsx` 的 mount effect 里）：
+## Appendix B: Building, running and testing
 
-1. `LigaturesAddon.activate()` 要求 `terminal.element` 已存在 ⇒ 必须 `term.open()` 之后 load（xterm 的 `AddonManager.loadAddon` 是**立即** activate 的，不存在「等 open 再激活」）。
-2. WebGL addon 必须在它**之后**激活，图集才会带上元素的 `font-feature-settings: "calt" on`（addon typings 明确要求）。
+### Development
 
-已知表现：
+```bash
+npm install        # install dependencies; postinstall rebuilds native modules for Electron
+npm run dev        # electron-vite dev mode
+npm run typecheck  # type checking only
+npm test           # typecheck + unit tests (mux tree) + session-layer tests
+npm run build      # build into out/
+```
 
-- **只有 WebGL 渲染器消费 joiner** ⇒ `"webgl": false` 时连字不生效（joiner 仍注册，但没人绘制）。
-- fg/bg 变化会切断 join 候选区间（core 的 `getJoinedCharacters` 按颜色分段调用 joiner）⇒ **彩色输出跨颜色处会断开连字**，VS Code 同样如此。
-- 光标落在连字区间内、或区间内选区状态不一致时，该区间不合并渲染 ⇒ 光标和选区在任何情况下都画得对。
-- joiner 收到的下标是**字符串下标**，xterm 内部负责映射回列并跳过 width-0 格子 ⇒ 中文/宽字符行无需特殊处理。
-- 纯渲染层特性：不改 buffer，因此复制/搜索/copy-mode/quick select/双击选词都不受影响；也正因为如此**没有单测覆盖**，验证方式是在 pane 里敲 `->`、`=>`、`!==`、`::`、`/*` 看字形是否合并。
-- 依赖体积：addon bundle 约 200KB（含 `font-ligatures`），随 renderer 一起打包。
+### Packaging
 
-### WebGL 渲染器的陈旧画面
+```bash
+npm run pack          # electron-vite build + electron-builder --dir (host platform)
+npm run dist:win      # NSIS installer, on Windows
+npm run dist:linux    # AppImage, on the host
+```
 
-默认启用 `@xterm/addon-webgl`（由 `webglAvailable()` 探测，失败回落 DOM 渲染器）。上游有一串「纹理图集 / 单元格陈旧到下一次全屏重绘才恢复」的问题（[xtermjs/xterm.js#6042](https://github.com/xtermjs/xterm.js/pull/6042) 及周边的图集重置报告），其中一部分**不会触发 `onContextLoss`**，也就是说拿不到事件可以响应。
+- The Windows installer must be built **on a Windows machine**: node-pty's Windows binary has to be
+  compiled against the Electron ABI on the target platform (`electron-builder.yml` sets
+  `npmRebuild: true`).
+- The icon is generated into `build/icon.png` by `scripts/make-icon.js`; electron-builder derives
+  the `.ico` from it.
 
-表现：全屏程序清屏重画后，它没写的格子仍显示上一屏的内容（SSH pane 里就是登录横幅的水印），而 xterm 的 buffer 本身是对的 —— 此时选区/复制出来的内容是干净的，据此可以和「真的丢了清屏序列」区分开。整屏重绘（如 Claude Code 里按 `Ctrl-L`）能恢复正常，因为重绘会覆盖这些格子。
+### Tests
 
-对策：`terminal-pane.tsx` 的 `repaint()` 强制 `term.refresh(0, rows-1)`，触发点是**会丢 damage 的那些时刻**：pane 布局完成、pane 从隐藏恢复可见（切换标签页 / 取消 zoom / 窗口回到前台）、以及**程序清屏时** —— 后者最关键：`J`（erase in display）与 `K`（erase in line）用一个返回 `false` 的 CSI handler 挂上（erase 仍由 xterm 正常执行），只用来请求一次合并到同一 tick 的重绘。清屏重画恰好是「画的格子对、擦掉的格子留旧内容」这种表现出现的时机。`onContextLoss` 时 dispose 交回 DOM 渲染器（xterm 官方建议）。
+- `npm run test:unit` — pure-JS unit tests for the mux tree/reducer (splits, collapsing, focus
+  navigation, tab lifecycle).
+- `npm run test:sessions` — runs under Electron (headless) and covers ssh_config parsing,
+  known_hosts (including hashed entries), node-pty local sessions, the SSH end-to-end flow (host-key
+  TOFU + auth prompts + error paths, verified against a local sshd), cwd inheritance (exec wrapper
+  landing, plus the fallback when the server refuses exec, verified with a built-in fake ssh2
+  server: the `cd` in the command string is correctly escaped and the wrapper path **writes nothing
+  into the session**), and pty size tracking the pane (no resize lost during either the
+  authentication window or the "request sent, reply not yet received" window).
 
-若仍偶发，配置里加 `"webgl": false`（默认 `true`，改动需重启）直接回落 DOM 渲染器 —— 也就是 VS Code 内置终端用的那个，代价是大量输出时的吞吐。这也是判断「画面陈旧到底是不是 WebGL 渲染器造成的」最快的 A/B：关掉后不再出现，就是渲染器的问题。
+### Native rebuilds
 
-### ConPTY 与转义序列（Windows 本地会话）
+node-pty must be compiled against the Electron ABI. `scripts/rebuild-native.js` auto-detects **zig**
+(`ZIG_PATH`, `~/zig160/zig`) and Python (`PYTHON` / `NODE_GYP_FORCE_PYTHON`, or common install
+locations) — none of which are configured in `.npmrc`. If zig is not found it falls back to the
+default toolchain, which then requires a system compiler with C++20 support (VS Build Tools on
+Windows, gcc ≥ 9 on Linux).
 
-ConPTY 不是一根透传字节的管子：conhost 自己解析子进程的 VT 输出、渲染进屏幕缓冲区，再把「它自己的渲染结果」发给终端。因此**它实现的序列会被规范化后重发，它不实现的序列会被直接丢弃**。
+### Mirrors
 
-在本机（Windows 10 LTSC 2019 / 17763）用真实 ConPTY 实测：子进程写出的 `OSC 7`（cwd）、`OSC 52`（剪贴板）、`OSC 1337`（iTerm 图片）、`CSI 16t`（单元格尺寸查询）、kitty graphics APC 全部**到达终端时已消失**；`SGR`（如 `ESC[31m`）则以规范化形式 `ESC[0;31m` 重发；`OSC 0/1/2`（标题）由 conhost 实现，能正常透出。`useConpty: false`（winpty）结果相同，`useConptyDll: true`（node-pty 自带 ConPTY 1.23）实测仍未改变——透传还需客户端侧协商。
+The two mirror keys live in different places because they are consumed at different times.
 
-影响与对策：
+`electron_mirror` (npmmirror) stays in `.npmrc`: it is read during `npm install` by the **electron
+package's own postinstall**, and npm only injects `npm_package_config_*` for the package whose
+script is running — putting it in this repo's `package.json` `config` would not be visible and would
+silently fall back to GitHub.
 
-- **Windows 本地会话**：任何依赖上述序列的功能都失效 —— yazi 图片预览、OSC 52、以及工具主动上报 cwd。这与应用代码无关，是平台层限制。
-- **SSH 会话不受影响**：字节流走 libssh2，不经过 ConPTY，`OSC 1337`/`OSC 52`/`OSC 7` 都能原样到达。远端 yazi 出图是可行的（前提是服务端 `AcceptEnv` 放行 `TERM_PROGRAM`）。
-- **Linux / macOS**：无 ConPTY，不受此限。
-- 参考：[mintty#1192](https://github.com/mintty/mintty/issues/1192)（结论是「ConPTY 支持 passthrough 之前无解」）、[windows/terminal#19926](https://github.com/microsoft/terminal/issues/19926)（透传带来的光标漂移问题）、[Rio 的 Windows 说明](https://rioterm.com/ko/docs/install/windows)。透传需要 ConPTY 1.22+（Windows Terminal 项目版本），且要由终端侧协商启用。
+`electron_builder_binaries_mirror` goes in `package.json`'s `config` instead, because it is read by
+the root `npm run dist:*` scripts, where `npm_package_config_*` is present.
+
+npm currently prints an "Unknown project config" warning for `electron_mirror` in `.npmrc`, and it
+will stop working in the next major version; at that point use the `ELECTRON_MIRROR` environment
+variable instead (which `@electron/get` also recognizes).
+
+## License
+
+See [LICENSE](LICENSE).

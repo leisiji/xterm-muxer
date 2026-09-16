@@ -18,7 +18,13 @@ export interface RendererConfig {
   ssh?: { defaultTarget?: string }
   /** What to do when a session exits (see main/config.ts). */
   exitBehavior?: 'close' | 'closeOnCleanExit' | 'hold'
-  keys: Record<string, string>
+  /**
+   * Keybinding overrides: binding id -> list of chords. Ids are the action ids in
+   * keymap.ts, with leader key table entries namespaced as `leader.<action>` and the
+   * prefix as `leader-prefix`. An empty list unbinds the action; an absent id keeps
+   * its default. Written by the Keybindings dialog (Ctrl+Shift+K).
+   */
+  keys: Record<string, string[]>
 }
 
 export interface SessionCreateLocal {

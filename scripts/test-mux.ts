@@ -13,7 +13,24 @@ import {
   resizeRatio
 } from '../src/renderer/src/mux-model'
 import { muxReducer } from '../src/renderer/src/mux-reducer'
-import { resolveLeaderKey, resolveResizeKey } from '../src/renderer/src/keys'
+import { DEFAULT_LEADER_KEYS, resolveLeaderKey, resolveResizeKey } from '../src/renderer/src/keys'
+import {
+  DEFAULT_DIRECT,
+  DIRECT_ORDER,
+  LEADER_ORDER,
+  captureError,
+  comboFromEvent,
+  comboSignature,
+  decideKey,
+  findConflicts,
+  formatCombo,
+  matchDirect,
+  matchLeader,
+  parseCombo,
+  resolveKeymap
+} from '../src/renderer/src/keymap'
+import type { KeyContext } from '../src/renderer/src/keymap'
+import type { Combo } from '../src/renderer/src/keys'
 import { assignLabels, findMatches, matchAtColumn, resolveLabel } from '../src/renderer/src/quick-select'
 import type { QuickLine } from '../src/renderer/src/quick-select'
 import { decodeOsc52 } from '../src/renderer/src/osc52'
@@ -459,5 +476,259 @@ assert.strictEqual(pointerMoved({ x: 40, y: 12 }, { x: 399, y: 480 }), true, 'mo
 assert.strictEqual(pointerMoved({ x: 40.5, y: 12 }, { x: 40.5, y: 12 }), false, 'same fractional position')
 assert.strictEqual(pointerMoved({ x: 40.5, y: 12 }, { x: 40.75, y: 12 }), true, 'fractional move')
 ok('pointerMoved: real movement vs. re-delivered position')
+
+// --- keymap: chord grammar ---
+const chordsOf = (id: string): string[] =>
+  id.startsWith('leader.') ? (DEFAULT_LEADER_KEYS as Record<string, string[]>)[id.slice(7)] : DEFAULT_DIRECT[id as never]
+const parseOk = (s: string): string => {
+  const c = parseCombo(s)
+  assert.ok(c !== null, `parses ${s}`)
+  return formatCombo(c as Combo)
+}
+// Every default chord survives a parse/format round trip, verbatim.
+for (const id of DIRECT_ORDER) for (const chord of chordsOf(id)) assert.strictEqual(parseOk(chord), chord, `${id}: ${chord}`)
+for (const action of LEADER_ORDER) for (const chord of chordsOf(`leader.${action}`)) assert.strictEqual(parseOk(chord), chord, `leader.${action}: ${chord}`)
+// Non-canonical input re-emits canonically (modifier order fixed, key case preserved).
+assert.strictEqual(parseOk('shift+ctrl+t'), 'Ctrl+Shift+t')
+assert.strictEqual(parseOk('option+ArrowUp'), 'Alt+ArrowUp')
+// A literal '+' key survives the rejoin.
+assert.strictEqual(parseOk('Ctrl++'), 'Ctrl++')
+// Rejections: a trailing '+', an unknown modifier, a bare modifier, nothing at all.
+assert.strictEqual(parseCombo('Ctrl+'), null)
+assert.strictEqual(parseCombo('Foo+Bar'), null)
+assert.strictEqual(parseCombo('Shift'), null)
+assert.strictEqual(parseCombo(''), null)
+assert.strictEqual(parseCombo('   '), null)
+// The tables and the defaults cannot drift apart.
+assert.strictEqual(new Set(DIRECT_ORDER).size, DIRECT_ORDER.length)
+assert.strictEqual(new Set(LEADER_ORDER).size, LEADER_ORDER.length)
+for (const id of DIRECT_ORDER) assert.ok(Array.isArray(DEFAULT_DIRECT[id]), `defaults for ${id}`)
+ok('keymap: chord parse/format round trip and the rejection set')
+
+// --- keymap: conflict signature ---
+// Ctrl and Meta are one axis (the matcher cannot tell them apart), and a shifted
+// character folds onto the physical key that produced it.
+assert.strictEqual(
+  comboSignature(parseCombo('Ctrl+T') as Combo),
+  comboSignature(parseCombo('Meta+t') as Combo),
+  'Ctrl and Meta fold'
+)
+assert.strictEqual(
+  comboSignature(parseCombo('Ctrl+Shift+5') as Combo),
+  comboSignature(parseCombo('Ctrl+Shift+%') as Combo),
+  'the same physical key folds together'
+)
+assert.notStrictEqual(
+  comboSignature(parseCombo('Ctrl+T') as Combo),
+  comboSignature(parseCombo('Ctrl+Shift+T') as Combo),
+  'Shift keeps chords distinct'
+)
+ok('keymap: conflict signature folds Ctrl/Meta and shifted characters')
+
+// --- keymap: defaults reproduce the old if-chain ---
+const km0 = resolveKeymap({})
+const eventFor = (c: Combo) => ({
+  key: c.key,
+  ctrlKey: c.mods.includes('Ctrl'),
+  altKey: c.mods.includes('Alt'),
+  metaKey: c.mods.includes('Meta'),
+  shiftKey: c.mods.includes('Shift')
+})
+for (const id of DIRECT_ORDER) {
+  for (const chord of chordsOf(id)) {
+    const combo = parseCombo(chord) as Combo
+    assert.strictEqual(matchDirect(eventFor(combo), km0), id, `${chord} -> ${id}`)
+  }
+}
+// The alias pairs are load-bearing: a layout may report either spelling.
+assert.strictEqual(matchDirect({ key: '"', ctrlKey: true, shiftKey: true, altKey: true, metaKey: false }, km0), 'split-col')
+assert.strictEqual(matchDirect({ key: "'", ctrlKey: true, shiftKey: true, altKey: true, metaKey: false }, km0), 'split-col')
+assert.strictEqual(matchDirect({ key: '5', ctrlKey: true, shiftKey: true, altKey: true, metaKey: false }, km0), 'split-row')
+assert.strictEqual(matchDirect({ key: '%', ctrlKey: true, shiftKey: true, altKey: true, metaKey: false }, km0), 'split-row')
+assert.strictEqual(matchDirect(ev('Tab', { ctrl: true }), km0), 'next-tab')
+assert.strictEqual(matchDirect(ev('PageDown', { ctrl: true }), km0), 'next-tab')
+assert.strictEqual(matchDirect(ev('Tab', { ctrl: true, shift: true }), km0), 'prev-tab')
+assert.strictEqual(matchDirect(ev('PageUp', { ctrl: true }), km0), 'prev-tab')
+ok('keymap: every default chord resolves to its action, aliases included')
+
+// --- keymap: ordinary typing must not fire a binding ---
+for (const e of [
+  ev('a'),
+  ev('t'),
+  ev('Enter'),
+  ev('Escape'),
+  ev('Tab'),
+  ev('F5'),
+  ev(' '),
+  ev('c', { ctrl: true }),
+  ev('v', { ctrl: true }),
+  ev('t', { ctrl: true }),
+  ev('5', { ctrl: true, shift: true }),
+  ev('t', { ctrl: true, shift: true, alt: true }),
+  ev('q', { alt: true })
+]) {
+  assert.strictEqual(matchDirect(e, km0), null, `no binding for ${JSON.stringify(e)}`)
+}
+ok('keymap: ordinary typing and near-miss chords match nothing')
+
+// --- keymap: physical-key fallback for odd layouts ---
+// The original code accepted `e.code === 'KeyN'` for the leader arm; that fallback is
+// now general, so Alt+N still arms leader on a layout that reports another key.
+assert.strictEqual(matchDirect({ ...ev('n', { alt: true }), key: 'ń', code: 'KeyN' }, km0), 'leader-prefix')
+assert.strictEqual(matchDirect({ ...ev('j', { ctrl: true, alt: true }), key: 'ј', code: 'KeyJ' }, km0), null)
+ok('keymap: alphanumeric bindings fall back to the physical key')
+
+// --- keymap: config overrides ---
+const km1 = resolveKeymap({ 'new-tab': ['Ctrl+J'] })
+assert.strictEqual(matchDirect(ev('j', { ctrl: true }), km1), 'new-tab')
+assert.strictEqual(matchDirect(ev('t', { ctrl: true, shift: true }), km1), null, 'an override replaces, it does not add')
+// [] and '' both mean explicitly unbound.
+assert.strictEqual(matchDirect(ev('t', { ctrl: true, shift: true }), resolveKeymap({ 'new-tab': [] })), null)
+assert.strictEqual(matchDirect(ev('j', { ctrl: true }), resolveKeymap({ 'new-tab': [] })), null)
+// A hand-edited config may write a bare string; the reader is tolerant, the writer is not.
+assert.strictEqual(matchDirect(ev('j', { ctrl: true }), resolveKeymap({ 'next-tab': 'Ctrl+J' })), 'next-tab')
+assert.strictEqual(matchDirect(ev('Tab', { ctrl: true }), resolveKeymap({ 'next-tab': 'Ctrl+J' })), null)
+assert.strictEqual(matchDirect(ev('Tab', { ctrl: true }), resolveKeymap({ 'next-tab': '' })), null)
+// A sparse override leaves every other default intact (this is what deepMerge does).
+const km5 = resolveKeymap({ 'close-pane': ['Ctrl+Alt+X'] })
+assert.strictEqual(matchDirect(ev('t', { ctrl: true, shift: true }), km5), 'new-tab')
+assert.strictEqual(matchDirect(ev('w', { ctrl: true, shift: true }), km5), null)
+assert.strictEqual(matchDirect(ev('x', { ctrl: true, alt: true }), km5), 'close-pane')
+// Unusable values fall back to the default *and* are reported, so a typo can never
+// leave an action unreachable.
+const km6 = resolveKeymap({ 'new-tab': ['Ctrl+'] })
+assert.strictEqual(matchDirect(ev('t', { ctrl: true, shift: true }), km6), 'new-tab')
+assert.ok(km6.invalid.includes('new-tab'))
+// A bare key would swallow typing, so it is refused too.
+const km7 = resolveKeymap({ 'new-tab': ['t'] })
+assert.strictEqual(matchDirect(ev('t'), km7), null)
+assert.strictEqual(matchDirect(ev('t', { ctrl: true, shift: true }), km7), 'new-tab')
+assert.ok(km7.invalid.includes('new-tab'))
+// A leader key cannot carry Ctrl/Alt (the decoder requires them up), and the prefix
+// must carry one or the leader table would eat ordinary typing.
+const km8 = resolveKeymap({ 'leader.new-tab': ['Ctrl+T'] })
+assert.ok(km8.invalid.includes('leader.new-tab'))
+assert.deepStrictEqual(matchLeader(ev('c'), km8), { kind: 'action', action: 'new-tab' })
+assert.ok(resolveKeymap({ 'leader-prefix': ['n'] }).invalid.includes('leader-prefix'))
+ok('keymap: overrides replace, unbind, tolerate strings and report invalid values')
+
+// --- keymap: conflict detection ---
+assert.deepStrictEqual(findConflicts(km0), [], 'the defaults never conflict')
+const dup = resolveKeymap({ 'new-tab': ['Ctrl+Alt+J'], 'new-ssh': ['Ctrl+Alt+J'] })
+assert.strictEqual(dup && findConflicts(dup).length, 1)
+assert.deepStrictEqual(findConflicts(dup)[0].keys.slice().sort(), ['new-ssh', 'new-tab'])
+// Case and modifier order are not a difference.
+assert.strictEqual(findConflicts(resolveKeymap({ 'new-tab': ['ctrl+alt+j'], 'new-ssh': ['Alt+Ctrl+J'] })).length, 1)
+// Adding Shift makes it a different chord.
+assert.deepStrictEqual(findConflicts(resolveKeymap({ 'new-tab': ['Ctrl+T'] })), [])
+// Two spellings of one physical key are one chord.
+const phys = findConflicts(resolveKeymap({ 'split-row': ['Ctrl+Shift+5'], 'split-col': ['Ctrl+Shift+%'] }))
+assert.strictEqual(phys.length, 1)
+assert.deepStrictEqual(phys[0].keys.slice().sort(), ['split-col', 'split-row'])
+// An unbound action never conflicts, and duplicates inside one action's own list are
+// not a conflict either.
+assert.deepStrictEqual(findConflicts(resolveKeymap({ 'new-ssh': [] })), [])
+assert.deepStrictEqual(findConflicts(resolveKeymap({ 'new-tab': ['Ctrl+J', 'cTrL+j'] })), [])
+// Leader entries conflict with each other, in their own namespace.
+const leadDup = findConflicts(resolveKeymap({ 'leader.new-tab': ['q'], 'leader.close-pane': ['q'] }))
+assert.strictEqual(leadDup.length, 1)
+assert.deepStrictEqual(leadDup[0].keys.slice().sort(), ['leader.close-pane', 'leader.new-tab'])
+// A direct Ctrl+T and a leader `t` are not in conflict: different moments.
+assert.deepStrictEqual(findConflicts(resolveKeymap({ 'new-tab': ['Ctrl+T'], 'leader.resize-mode': ['t'] })), [])
+ok('keymap: conflicts are detected per namespace and fold physical keys')
+
+// --- keymap: leader table is configurable ---
+const kmL = resolveKeymap({ 'leader.new-tab': ['t'] })
+assert.deepStrictEqual(matchLeader(ev('t'), kmL), { kind: 'action', action: 'new-tab' })
+assert.deepStrictEqual(matchLeader(ev('c'), kmL), { kind: 'cancel' }, 'the old key is released')
+assert.deepStrictEqual(matchLeader(ev('4'), kmL), { kind: 'tab-index', index: 4 }, 'the digit range is fixed')
+assert.deepStrictEqual(matchLeader(ev('z'), kmL), { kind: 'action', action: 'toggle-zoom' })
+// Shift stays insignificant for leader keys: Shift+- and - are told apart by the
+// character they produce, and Shift+c is still `c`.
+assert.deepStrictEqual(matchLeader(ev('-', { shift: true }), kmL), { kind: 'action', action: 'split-row' })
+assert.deepStrictEqual(matchLeader(ev('_', { shift: true }), kmL), { kind: 'action', action: 'split-row' })
+assert.deepStrictEqual(matchLeader(ev('-'), kmL), { kind: 'action', action: 'split-col' })
+assert.deepStrictEqual(matchLeader(ev('C', { shift: true }), kmL), { kind: 'cancel' })
+assert.deepStrictEqual(matchLeader(ev('Shift', { shift: true }), kmL), { kind: 'ignore' })
+assert.deepStrictEqual(matchLeader(ev('-', { ctrl: true }), kmL), { kind: 'cancel' })
+// The prefix itself is rebindable.
+const kmP = resolveKeymap({ 'leader-prefix': ['Ctrl+B'] })
+assert.strictEqual(matchDirect(ev('b', { ctrl: true }), kmP), 'leader-prefix')
+assert.strictEqual(matchDirect(ev('n', { alt: true }), kmP), null)
+ok('keymap: leader table and prefix are configurable, digits stay fixed')
+
+// --- keymap: dispatch precedence ---
+const keyCtx = (over: Partial<KeyContext> = {}): KeyContext => ({
+  hasTerminal: true,
+  copyMode: false,
+  quickSelect: false,
+  resizeMode: false,
+  leaderArmed: false,
+  ...over
+})
+assert.deepStrictEqual(decideKey(ev('x', { alt: true }), keyCtx(), km0), { kind: 'copy-mode-toggle' })
+assert.deepStrictEqual(decideKey(ev('x', { alt: true }), keyCtx({ copyMode: true }), km0), { kind: 'copy-mode-toggle' })
+// Without a terminal handle the entry chord falls through, exactly as before.
+assert.deepStrictEqual(decideKey(ev('x', { alt: true }), keyCtx({ hasTerminal: false }), km0), { kind: 'pass' })
+// An active modal pane owns every keystroke.
+assert.deepStrictEqual(decideKey(ev('t', { ctrl: true, shift: true }), keyCtx({ copyMode: true }), km0), { kind: 'copy-mode-key' })
+assert.deepStrictEqual(decideKey(ev('i', { alt: true }), keyCtx({ quickSelect: true }), km0), { kind: 'quick-select-toggle' })
+assert.deepStrictEqual(decideKey(ev('a'), keyCtx({ quickSelect: true }), km0), { kind: 'quick-select-key' })
+// Resize mode, including its bare-modifier passthrough.
+assert.deepStrictEqual(decideKey(ev('h'), keyCtx({ resizeMode: true }), km0), { kind: 'resize', action: 'left' })
+assert.deepStrictEqual(decideKey(ev('q'), keyCtx({ resizeMode: true }), km0), { kind: 'resize-exit' })
+assert.deepStrictEqual(decideKey(ev('Shift', { shift: true }), keyCtx({ resizeMode: true }), km0), { kind: 'pass' })
+// An armed leader swallows the next key, including keys that would otherwise be bindings.
+assert.deepStrictEqual(decideKey(ev('c'), keyCtx({ leaderArmed: true }), km0), {
+  kind: 'leader-result',
+  result: { kind: 'action', action: 'new-tab' }
+})
+assert.deepStrictEqual(decideKey(ev('Shift', { shift: true }), keyCtx({ leaderArmed: true }), km0), { kind: 'pass' })
+assert.deepStrictEqual(decideKey(ev('4'), keyCtx({ leaderArmed: true }), km0), {
+  kind: 'leader-result',
+  result: { kind: 'tab-index', index: 4 }
+})
+// Deliberate change: Alt+m used to fire even while leader was armed, leaving it armed.
+// Now the prefix swallows it.
+assert.deepStrictEqual(decideKey(ev('m', { alt: true }), keyCtx({ leaderArmed: true }), km0), {
+  kind: 'leader-result',
+  result: { kind: 'cancel' }
+})
+assert.deepStrictEqual(decideKey(ev('m', { alt: true }), keyCtx(), km0), { kind: 'action', id: 'last-tab' })
+// Direct table, prefix, and the passthrough for everything else.
+assert.deepStrictEqual(decideKey(ev(',', { ctrl: true }), keyCtx(), km0), { kind: 'action', id: 'open-settings' })
+assert.deepStrictEqual(decideKey(ev('n', { alt: true }), keyCtx(), km0), { kind: 'arm-leader' })
+assert.deepStrictEqual(decideKey(ev('q'), keyCtx(), km0), { kind: 'pass' })
+assert.deepStrictEqual(decideKey(ev('Escape'), keyCtx(), km0), { kind: 'pass' })
+// A chord completed while leader is armed: the bare modifier passes through first.
+assert.deepStrictEqual(decideKey({ ...ev('a', { ctrl: true }), isComposing: true }, keyCtx(), km0), { kind: 'pass' })
+ok('keymap: decideKey precedence, modals, leader swallowing, passthrough')
+
+// --- keymap: recording a chord ---
+assert.strictEqual(comboFromEvent(ev('Shift', { shift: true })), null)
+assert.strictEqual(comboFromEvent(ev('Control', { ctrl: true })), null)
+assert.strictEqual(comboFromEvent(ev('Alt', { alt: true })), null)
+assert.strictEqual(comboFromEvent(ev('Meta', { meta: true })), null)
+assert.strictEqual(comboFromEvent(ev('Dead')), null)
+assert.strictEqual(comboFromEvent(ev('Process', { ctrl: true })), null)
+assert.strictEqual(comboFromEvent(ev('')), null)
+assert.strictEqual(comboFromEvent({ ...ev('a', { ctrl: true }), isComposing: true }), null)
+assert.deepStrictEqual(comboFromEvent(ev('n', { alt: true })), { key: 'n', mods: ['Alt'] })
+// A modifier-less named key is recordable; a bare glyph is not.
+assert.deepStrictEqual(comboFromEvent(ev('F5')), { key: 'F5', mods: [] })
+assert.deepStrictEqual(comboFromEvent(ev('t', { ctrl: true, shift: true })), { key: 't', mods: ['Ctrl', 'Shift'] })
+// Cmd records as Ctrl: the matcher folds them, so this is what makes a binding work
+// on macOS as well.
+assert.deepStrictEqual(comboFromEvent(ev('t', { ctrl: true, meta: true, shift: true })), { key: 't', mods: ['Ctrl', 'Shift'] })
+assert.deepStrictEqual(comboFromEvent(ev('t', { meta: true })), { key: 't', mods: ['Ctrl'] })
+// The reasons shown while the recorder stays armed.
+assert.ok((captureError(ev('t')) ?? '').includes('Ctrl or Alt'), 'a bare glyph is refused')
+assert.strictEqual(captureError(ev('F5')), null)
+assert.ok(captureError(ev('Shift', { shift: true })) !== null, 'a bare modifier waits for the real key')
+assert.ok((captureError(ev('5'), { leader: true }) ?? '').includes('1–9'), 'digits are reserved')
+assert.ok((captureError(ev('b', { ctrl: true }), { leader: true }) ?? '').includes('Ctrl or Alt'))
+assert.strictEqual(captureError(ev('q'), { leader: true }), null)
+assert.strictEqual(captureError(ev('Shift', { shift: true }), { leader: true }) !== null, true)
+ok('keymap: capture rejects bare modifiers, dead keys, IME and unsafe glyphs')
 
 console.log(`\nMUX TESTS PASSED (${passed} assertions)`)

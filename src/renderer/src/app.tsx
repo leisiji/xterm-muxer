@@ -1,9 +1,10 @@
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { TabBar } from './components/tab-bar'
 import { SshDialog } from './components/ssh-dialog'
 import { SettingsDialog } from './components/settings-dialog'
+import { KeysDialog } from './components/keys-dialog'
 import type { SettingsValues } from './components/settings-dialog'
 import { SearchOverlay, LeaderOverlay, RenameTabOverlay, ResizeOverlay } from './components/overlays'
 import { SplitView } from './components/split-view'
@@ -13,7 +14,9 @@ import { nextPaneId, nextTabId, neighborLeaf, paneOrder, findResizeSplit, resize
 import type { MuxState, PaneRecord, PendingCreate, PromptState, SplitOrientation } from './mux-model'
 import type { RendererConfig, SavedSshHost, SavedSshHostInput } from './types'
 import { resolveTheme } from './theme'
-import { isKey, resolveLeaderKey, resolveResizeKey } from './keys'
+import { decideKey, formatCombo, resolveKeymap } from './keymap'
+import type { DirectActionId, ResolvedKeymap } from './keymap'
+import type { LeaderKeyResult } from './keys'
 
 const initialMux: MuxState = { tabs: [], activeTabId: null }
 
@@ -36,6 +39,7 @@ export function App(): ReactElement {
   const [config, setConfig] = useState<RendererConfig | null>(null)
   const [sshDialogOpen, setSshDialogOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [keybindingsOpen, setKeybindingsOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [sshHosts, setSshHosts] = useState<string[]>([])
   const [savedHosts, setSavedHosts] = useState<SavedSshHost[]>([])
@@ -59,6 +63,15 @@ export function App(): ReactElement {
   // Latest config, readable synchronously when creating a session (state updates
   // are async, and the initial tab is created right after config loads).
   const configRef = useRef<RendererConfig>(fallbackConfig)
+  // The resolved keymap. Recomputed only when the config changes, and mirrored into a
+  // ref so the keydown handler never reads a stale table.
+  const keymap = useMemo(() => resolveKeymap(config?.keys), [config])
+  const keymapRef = useRef<ResolvedKeymap>(keymap)
+  keymapRef.current = keymap
+  // Mirrors `keybindingsOpen` for the window listener, which must stop claiming keys
+  // while the Keybindings dialog is recording one.
+  const keybindingsRef = useRef(false)
+  keybindingsRef.current = keybindingsOpen
   // Passwords provided via the SSH dialog, kept in memory for this app run only
   // so inherited panes/tabs don't re-prompt. Never written to disk.
   const sshSecretsRef = useRef(new Map<string, string>())
@@ -114,6 +127,21 @@ export function App(): ReactElement {
     },
     [applyTheme]
   )
+
+  /**
+   * Persist keybinding overrides. `keys` carries only the bindings the dialog touched,
+   * so untouched ids keep whatever is already stored (deepMerge merges the map
+   * key-by-key) and a future default change still reaches this user.
+   */
+  const applyKeys = useCallback((keys: Record<string, string[]>): void => {
+    void window.api.config
+      .set({ keys })
+      .then((c) => {
+        configRef.current = c
+        setConfig(c)
+      })
+      .catch(() => undefined)
+  }, [])
 
   /**
    * Apply `exitBehavior` to a finished session: close its pane (and the window
@@ -454,198 +482,202 @@ export function App(): ReactElement {
     handle.search.findPrevious(searchQuery)
   }
 
+  /** Run a direct-table action. The handlers themselves are unchanged. */
+  function runAction(id: DirectActionId, paneId: number | null): void {
+    switch (id) {
+      case 'new-tab':
+        newTab()
+        break
+      case 'new-ssh':
+        setSshDialogOpen(true)
+        break
+      case 'open-settings':
+        setSettingsOpen(true)
+        break
+      case 'open-keybindings':
+        setKeybindingsOpen(true)
+        break
+      case 'close-pane':
+        if (paneId !== null) dispatch({ type: 'close-pane', paneId })
+        break
+      case 'toggle-zoom':
+        if (paneId !== null) dispatch({ type: 'zoom', paneId })
+        break
+      case 'toggle-search':
+        setSearchOpen((o) => !o)
+        break
+      case 'copy':
+        copySelection()
+        break
+      case 'paste':
+        void pasteClipboard()
+        break
+      case 'split-col':
+        if (paneId !== null) splitPane(paneId, 'col')
+        break
+      case 'split-row':
+        if (paneId !== null) splitPane(paneId, 'row')
+        break
+      case 'next-tab':
+        cycleTab(1)
+        break
+      case 'prev-tab':
+        cycleTab(-1)
+        break
+      case 'focus-up':
+        moveFocus('up')
+        break
+      case 'focus-down':
+        moveFocus('down')
+        break
+      case 'focus-left':
+        moveFocus('left')
+        break
+      case 'focus-right':
+        moveFocus('right')
+        break
+      case 'toggle-fullscreen':
+        window.api.window.toggleFullscreen()
+        break
+      case 'last-tab':
+        activateLastTab()
+        break
+      case 'focus-next-pane':
+        focusNextPane()
+        break
+      // copy-mode, quick-select and leader-prefix have their own outcomes.
+      default:
+        break
+    }
+  }
+
+  /** Run a command from the leader key table. */
+  function runLeader(result: LeaderKeyResult, paneId: number | null): void {
+    if (result.kind === 'tab-index') {
+      const target = stateRef.current.tabs[result.index - 1]
+      if (target) dispatch({ type: 'activate-tab', tabId: target.id })
+      return
+    }
+    if (result.kind !== 'action') return
+    switch (result.action) {
+      case 'split-row':
+        if (paneId !== null) splitPane(paneId, 'row')
+        break
+      case 'split-col':
+        if (paneId !== null) splitPane(paneId, 'col')
+        break
+      case 'new-tab':
+        newTab()
+        break
+      case 'close-pane':
+        if (paneId !== null) dispatch({ type: 'close-pane', paneId })
+        break
+      case 'toggle-zoom':
+        if (paneId !== null) dispatch({ type: 'zoom', paneId })
+        break
+      case 'rename-tab':
+        setRenameOpen(true)
+        break
+      case 'next-tab':
+        cycleTab(1)
+        break
+      case 'prev-tab':
+        cycleTab(-1)
+        break
+      case 'focus-left':
+        moveFocus('left')
+        break
+      case 'focus-down':
+        moveFocus('down')
+        break
+      case 'focus-up':
+        moveFocus('up')
+        break
+      case 'focus-right':
+        moveFocus('right')
+        break
+      case 'resize-mode':
+        enterResizeMode()
+        break
+    }
+  }
+
+  /**
+   * Route a keydown. `decideKey` owns the precedence (which modal table gets the key
+   * and in what order); this only performs the resulting outcome. Everything the
+   * bindings resolve to comes from the user-configurable keymap.
+   */
   function handleShortcut(e: KeyboardEvent): boolean {
     const s = stateRef.current
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
     const paneId = tab?.activePaneId ?? null
 
-    // Copy mode (Alt+X): while active the pane owns every keystroke so nothing
-    // leaks to the shell; Alt+X again leaves it.
     const activeSid = activeSessionId()
     const handle = activeSid ? terminalsRef.current.get(activeSid) : undefined
-    if (isKey(e, 'X', ['Alt'])) {
-      if (handle) {
-        if (handle.copyMode.active()) handle.copyMode.exit()
-        else handle.copyMode.enter()
-        return true
-      }
-    }
-    if (handle?.copyMode.active()) {
-      handle.copyMode.handleKey(e)
-      return true
-    }
 
-    // Quick select (Alt+I): wezterm QuickSelectArgs. While active the pane owns
-    // the keystrokes (label prefix), like copy mode.
-    if (isKey(e, 'I', ['Alt'])) {
-      if (handle) {
-        if (handle.quickSelect.active()) handle.quickSelect.exit()
-        else handle.quickSelect.enter()
-        return true
-      }
-    }
-    if (handle?.quickSelect.active()) {
-      handle.quickSelect.handleKey(e)
-      return true
-    }
+    const outcome = decideKey(
+      e,
+      {
+        hasTerminal: !!handle,
+        copyMode: !!handle?.copyMode.active(),
+        quickSelect: !!handle?.quickSelect.active(),
+        resizeMode: resizeRef.current,
+        leaderArmed: leaderRef.current
+      },
+      keymapRef.current
+    )
 
-    // Resize key table (leader+r): modal, hjkl adjust the active pane's divider
-    // and any other key leaves the mode (wezterm `resize_pane` table).
-    if (resizeRef.current) {
-      const res = resolveResizeKey(e)
-      if (res.kind === 'ignore') return false
-      if (res.kind === 'resize') {
-        adjustPaneSize(res.action)
-        resetResizeTimer()
-      } else {
-        exitResizeMode()
-      }
-      return true
-    }
-
-    // Alt+Enter: toggle fullscreen (hides the Windows title bar), like wezterm.
-    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key === 'Enter') {
-      window.api.window.toggleFullscreen()
-      return true
-    }
-
-    // Alt+m / Alt+p: ActivateLastTab / ActivatePaneDirection("Next").
-    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'm') {
-      activateLastTab()
-      return true
-    }
-    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'p') {
-      focusNextPane()
-      return true
-    }
-
-    // tmux-style leader mode: the key after Alt+N selects a mux command.
-    if (leaderRef.current) {
-      const res = resolveLeaderKey(e)
-      // A chord like Shift+- emits the bare modifier's keydown first ("Shift",
-      // then "_"). Ignore those so arming leader isn't cancelled before the real
-      // key arrives, and let the modifier reach the terminal normally.
-      if (res.kind === 'ignore') return false
-      clearLeader()
-      if (res.kind === 'action') {
-        if (res.action === 'split-row') {
-          if (paneId !== null) splitPane(paneId, 'row')
-        } else if (res.action === 'split-col') {
-          if (paneId !== null) splitPane(paneId, 'col')
-        } else if (res.action === 'close-pane') {
-          if (paneId !== null) dispatch({ type: 'close-pane', paneId })
-        } else if (res.action === 'toggle-zoom') {
-          if (paneId !== null) dispatch({ type: 'zoom', paneId })
-        } else if (res.action === 'rename-tab') {
-          setRenameOpen(true)
-        } else if (res.action === 'next-tab') {
-          cycleTab(1)
-        } else if (res.action === 'prev-tab') {
-          cycleTab(-1)
-        } else if (res.action === 'focus-left') {
-          moveFocus('left')
-        } else if (res.action === 'focus-down') {
-          moveFocus('down')
-        } else if (res.action === 'focus-up') {
-          moveFocus('up')
-        } else if (res.action === 'focus-right') {
-          moveFocus('right')
-        } else if (res.action === 'resize-mode') {
-          enterResizeMode()
-        } else {
-          newTab()
+    switch (outcome.kind) {
+      case 'pass':
+        // Let the key reach the terminal (or whatever else wants it).
+        return false
+      case 'copy-mode-toggle':
+        if (handle) {
+          if (handle.copyMode.active()) handle.copyMode.exit()
+          else handle.copyMode.enter()
         }
-      } else if (res.kind === 'tab-index') {
-        const target = s.tabs[res.index - 1]
-        if (target) dispatch({ type: 'activate-tab', tabId: target.id })
-      }
-      // Swallow the key either way so it never reaches the shell.
-      return true
+        return true
+      case 'copy-mode-key':
+        handle?.copyMode.handleKey(e)
+        return true
+      case 'quick-select-toggle':
+        if (handle) {
+          if (handle.quickSelect.active()) handle.quickSelect.exit()
+          else handle.quickSelect.enter()
+        }
+        return true
+      case 'quick-select-key':
+        handle?.quickSelect.handleKey(e)
+        return true
+      case 'resize':
+        adjustPaneSize(outcome.action)
+        resetResizeTimer()
+        return true
+      case 'resize-exit':
+        exitResizeMode()
+        return true
+      case 'arm-leader':
+        armLeader()
+        return true
+      case 'leader-result':
+        // Swallow the key either way so it never reaches the shell.
+        clearLeader()
+        runLeader(outcome.result, paneId)
+        return true
+      case 'action':
+        runAction(outcome.id, paneId)
+        return true
     }
-
-    // Alt+N arms leader mode.
-    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyN' || e.key.toLowerCase() === 'n')) {
-      armLeader()
-      return true
-    }
-
-    if (isKey(e, 'T', ['Ctrl', 'Shift'])) {
-      newTab()
-      return true
-    }
-    if (isKey(e, 'S', ['Ctrl', 'Shift'])) {
-      setSshDialogOpen(true)
-      return true
-    }
-    if (isKey(e, ',', ['Ctrl'])) {
-      setSettingsOpen(true)
-      return true
-    }
-    if (isKey(e, 'W', ['Ctrl', 'Shift'])) {
-      if (paneId !== null) dispatch({ type: 'close-pane', paneId })
-      return true
-    }
-    if (isKey(e, 'Z', ['Ctrl', 'Shift'])) {
-      if (paneId !== null) dispatch({ type: 'zoom', paneId })
-      return true
-    }
-    if (isKey(e, 'F', ['Ctrl', 'Shift'])) {
-      setSearchOpen((o) => !o)
-      return true
-    }
-    if (isKey(e, 'C', ['Ctrl', 'Shift'])) {
-      copySelection()
-      return true
-    }
-    if (isKey(e, 'V', ['Ctrl', 'Shift'])) {
-      void pasteClipboard()
-      return true
-    }
-    if (isKey(e, '"', ['Ctrl', 'Shift', 'Alt']) || isKey(e, "'", ['Ctrl', 'Shift', 'Alt'])) {
-      if (paneId !== null) splitPane(paneId, 'col')
-      return true
-    }
-    if (isKey(e, '%', ['Ctrl', 'Shift', 'Alt']) || isKey(e, '5', ['Ctrl', 'Shift', 'Alt'])) {
-      if (paneId !== null) splitPane(paneId, 'row')
-      return true
-    }
-    if (isKey(e, 'Tab', ['Ctrl'])) {
-      cycleTab(1)
-      return true
-    }
-    if (isKey(e, 'Tab', ['Ctrl', 'Shift'])) {
-      cycleTab(-1)
-      return true
-    }
-    if (isKey(e, 'PageDown', ['Ctrl'])) {
-      cycleTab(1)
-      return true
-    }
-    if (isKey(e, 'PageUp', ['Ctrl'])) {
-      cycleTab(-1)
-      return true
-    }
-    if (isKey(e, 'ArrowUp', ['Alt'])) {
-      moveFocus('up')
-      return true
-    }
-    if (isKey(e, 'ArrowDown', ['Alt'])) {
-      moveFocus('down')
-      return true
-    }
-    if (isKey(e, 'ArrowLeft', ['Alt'])) {
-      moveFocus('left')
-      return true
-    }
-    if (isKey(e, 'ArrowRight', ['Alt'])) {
-      moveFocus('right')
-      return true
-    }
-    return false
   }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // While the Keybindings dialog is recording, it owns every keystroke. This has
+      // to happen here and not via stopPropagation in the dialog: this listener runs
+      // in the capture phase on `window`, so it sees the event before React's root
+      // handler does, and the recorder's cell is a <button> that the form-field guard
+      // below does not cover.
+      if (keybindingsRef.current) return
       // Skip mux shortcuts while the user is typing in a real form field (search
       // box / SSH dialog). The xterm helper <textarea> is excluded: it is the
       // terminal's focus sink, and treating it as a form field would swallow
@@ -694,13 +726,14 @@ export function App(): ReactElement {
   }, [focusedSession])
 
   // Return focus to the active terminal once any overlay/dialog closes (rename /
-  // settings / SSH), otherwise it is left on <body> and typing goes nowhere.
+  // settings / keybindings / SSH), otherwise it is left on <body> and typing goes
+  // nowhere.
   useEffect(() => {
-    if (renameOpen || settingsOpen || sshDialogOpen) return
+    if (renameOpen || settingsOpen || keybindingsOpen || sshDialogOpen) return
     if (!focusedSession) return
     terminalsRef.current.get(focusedSession)?.term.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renameOpen, settingsOpen, sshDialogOpen])
+  }, [renameOpen, settingsOpen, keybindingsOpen, sshDialogOpen])
 
   const registerTerminal = useCallback((sessionId: string, handle: TerminalHandle): void => {
     terminalsRef.current.set(sessionId, handle)
@@ -770,6 +803,12 @@ export function App(): ReactElement {
     dispatch({ type: 'resize-split', tabId, path, ratio })
   }, [])
 
+  /** The first chord bound to an action, formatted for a tooltip; '' when unbound. */
+  const chordHint = (id: DirectActionId): string => {
+    const chords = keymap.direct.get(id) ?? []
+    return chords.length > 0 ? ` (${formatCombo(chords[0])})` : ''
+  }
+
   const paneProps = {
     registerTerminal,
     unregisterTerminal,
@@ -794,6 +833,13 @@ export function App(): ReactElement {
         onNewTab={newTab}
         onNewSsh={() => setSshDialogOpen(true)}
         onSettings={() => setSettingsOpen(true)}
+        onKeybindings={() => setKeybindingsOpen(true)}
+        shortcutHints={{
+          newTab: chordHint('new-tab'),
+          newSsh: chordHint('new-ssh'),
+          settings: chordHint('open-settings'),
+          keybindings: chordHint('open-keybindings')
+        }}
       />
       <div className="workspace">
         {state.tabs.length === 0 && (
@@ -802,10 +848,12 @@ export function App(): ReactElement {
             <div className="empty-hint">Start a local shell or connect over SSH.</div>
             <div className="empty-actions">
               <button onClick={newTab}>
-                New terminal <kbd>Ctrl+Shift+T</kbd>
+                New terminal
+                {keymap.direct.get('new-tab')?.length ? <kbd>{formatCombo(keymap.direct.get('new-tab')![0])}</kbd> : null}
               </button>
               <button onClick={() => setSshDialogOpen(true)}>
-                New SSH connection <kbd>Ctrl+Shift+S</kbd>
+                New SSH connection
+                {keymap.direct.get('new-ssh')?.length ? <kbd>{formatCombo(keymap.direct.get('new-ssh')![0])}</kbd> : null}
               </button>
             </div>
           </div>
@@ -849,6 +897,15 @@ export function App(): ReactElement {
         onApply={(values) => {
           setSettingsOpen(false)
           applySettings(values)
+        }}
+      />
+      <KeysDialog
+        open={keybindingsOpen}
+        keys={config.keys ?? {}}
+        onCancel={() => setKeybindingsOpen(false)}
+        onApply={(patch) => {
+          setKeybindingsOpen(false)
+          applyKeys(patch)
         }}
       />
       <SshDialog
