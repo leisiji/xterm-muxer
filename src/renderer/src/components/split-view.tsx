@@ -14,7 +14,14 @@ export interface SplitViewProps {
   config: RendererConfig
   paneProps: Pick<
     TerminalPaneProps,
-    'registerTerminal' | 'unregisterTerminal' | 'onAttach' | 'onTitle' | 'onCwd' | 'onFocus' | 'resolvePrompt'
+    | 'registerTerminal'
+    | 'unregisterTerminal'
+    | 'onAttach'
+    | 'onTitle'
+    | 'onCwd'
+    | 'onFocus'
+    | 'onPaneMenu'
+    | 'resolvePrompt'
   >
   onResizeSplit: (tabId: number, path: BranchPath, ratio: number) => void
 }

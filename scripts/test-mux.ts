@@ -35,6 +35,7 @@ import { assignLabels, findMatches, matchAtColumn, resolveLabel } from '../src/r
 import type { QuickLine } from '../src/renderer/src/quick-select'
 import { decodeOsc52 } from '../src/renderer/src/osc52'
 import { pointerMoved } from '../src/renderer/src/pointer-move'
+import { clampMenuPosition, paneMenuItems, paneMenuRequested } from '../src/renderer/src/pane-menu'
 import {
   decodeCopyKey,
   emptyCopyState,
@@ -476,6 +477,62 @@ assert.strictEqual(pointerMoved({ x: 40, y: 12 }, { x: 399, y: 480 }), true, 'mo
 assert.strictEqual(pointerMoved({ x: 40.5, y: 12 }, { x: 40.5, y: 12 }), false, 'same fractional position')
 assert.strictEqual(pointerMoved({ x: 40.5, y: 12 }, { x: 40.75, y: 12 }), true, 'fractional move')
 ok('pointerMoved: real movement vs. re-delivered position')
+
+// --- the pane right-click menu ---
+// An application that never asked for the mouse leaves the right button to the
+// muxer; every tracking mode hands it to the application instead.
+assert.strictEqual(paneMenuRequested({ mouseTracking: 'none', shiftKey: false }), true, 'no tracking -> menu')
+for (const mode of ['x10', 'vt200', 'drag', 'any']) {
+  assert.strictEqual(paneMenuRequested({ mouseTracking: mode, shiftKey: false }), false, `${mode} -> application`)
+}
+// Shift is the escape hatch, and the one gesture xterm's force-selection already
+// reserves for the local UI.
+assert.strictEqual(paneMenuRequested({ mouseTracking: 'vt200', shiftKey: true }), true, 'shift overrides tracking')
+assert.strictEqual(paneMenuRequested({ mouseTracking: 'none', shiftKey: true }), true, 'shift with no tracking')
+
+// The zoom entry toggles, so its label tracks the pane's state.
+assert.strictEqual(paneMenuItems(false)[0].label, 'Zoom pane')
+assert.strictEqual(paneMenuItems(true)[0].label, 'Unzoom pane')
+assert.deepStrictEqual(
+  paneMenuItems(false).map((i) => i.action),
+  ['toggle-zoom', 'close-pane', 'split-row', 'split-col'],
+  'items are the pane commands, in order'
+)
+// Every action is one runAction knows: it is the same dispatch table the keymap
+// uses, so a menu entry cannot name an action nothing handles.
+for (const item of paneMenuItems(false)) {
+  assert.ok(DIRECT_ORDER.includes(item.action), `${item.action} is a direct action`)
+}
+
+// A menu opened at the pointer stays inside the window.
+assert.deepStrictEqual(
+  clampMenuPosition(100, 200, { width: 180, height: 120 }, { width: 1100, height: 700 }),
+  { x: 100, y: 200 },
+  'room to spare: unchanged'
+)
+assert.deepStrictEqual(
+  clampMenuPosition(1000, 200, { width: 180, height: 120 }, { width: 1100, height: 700 }),
+  { x: 916, y: 200 },
+  'past the right edge: pulled back a margin from it'
+)
+assert.deepStrictEqual(
+  clampMenuPosition(100, 690, { width: 180, height: 120 }, { width: 1100, height: 700 }),
+  { x: 100, y: 576 },
+  'past the bottom edge'
+)
+assert.deepStrictEqual(
+  clampMenuPosition(-20, -5, { width: 180, height: 120 }, { width: 1100, height: 700 }),
+  { x: 4, y: 4 },
+  'off the top-left corner (the tab bar overlaps the pane)'
+)
+// A menu taller than the window cannot satisfy both margins; the top stays
+// readable rather than being pushed off the far side.
+assert.deepStrictEqual(
+  clampMenuPosition(300, 500, { width: 180, height: 900 }, { width: 1100, height: 700 }),
+  { x: 300, y: 4 },
+  'menu taller than the window pins to the top margin'
+)
+ok('pane menu: shown only when the app does not track the mouse, clamped to the window')
 
 // --- keymap: chord grammar ---
 const chordsOf = (id: string): string[] =>

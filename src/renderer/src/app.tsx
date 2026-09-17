@@ -7,6 +7,7 @@ import { SettingsDialog } from './components/settings-dialog'
 import { KeysDialog } from './components/keys-dialog'
 import type { SettingsValues } from './components/settings-dialog'
 import { SearchOverlay, LeaderOverlay, RenameTabOverlay, ResizeOverlay } from './components/overlays'
+import { PaneMenu } from './components/pane-menu'
 import { SplitView } from './components/split-view'
 import type { TerminalHandle } from './components/terminal-pane'
 import { muxReducer, findTabByPaneId } from './mux-reducer'
@@ -46,6 +47,8 @@ export function App(): ReactElement {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [leaderActive, setLeaderActive] = useState(false)
+  // The pane right-click menu: which pane it is for, and where it was opened.
+  const [paneMenu, setPaneMenu] = useState<{ paneId: number; x: number; y: number } | null>(null)
 
   // tmux-style leader (prefix) key: Alt+N arms it, the next key fires a command.
   // A ref mirrors the state so the keydown handler never sees a stale value.
@@ -714,6 +717,11 @@ export function App(): ReactElement {
   const focusTab = state.tabs.find((t) => t.id === state.activeTabId)
   const focusedSession =
     focusTab && focusTab.activePaneId !== null ? focusTab.panes.get(focusTab.activePaneId)?.sessionId ?? null : null
+  // The pane menu's zoom entry toggles, so it has to read the pane's current
+  // state: the same pane shows "Zoom pane" or "Unzoom pane" depending on it.
+  const paneMenuOpen = paneMenu !== null
+  const paneMenuTab = paneMenu ? findTabByPaneId(state, paneMenu.paneId) : undefined
+  const paneMenuZoomed = paneMenu !== null && paneMenuTab?.zoomedPaneId === paneMenu.paneId
   const renameInitial = (() => {
     if (!focusTab) return ''
     if (focusTab.title) return focusTab.title
@@ -726,14 +734,14 @@ export function App(): ReactElement {
   }, [focusedSession])
 
   // Return focus to the active terminal once any overlay/dialog closes (rename /
-  // settings / keybindings / SSH), otherwise it is left on <body> and typing goes
-  // nowhere.
+  // settings / keybindings / SSH / the pane menu), otherwise it is left on <body>
+  // and typing goes nowhere.
   useEffect(() => {
-    if (renameOpen || settingsOpen || keybindingsOpen || sshDialogOpen) return
+    if (renameOpen || settingsOpen || keybindingsOpen || sshDialogOpen || paneMenuOpen) return
     if (!focusedSession) return
     terminalsRef.current.get(focusedSession)?.term.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renameOpen, settingsOpen, keybindingsOpen, sshDialogOpen])
+  }, [renameOpen, settingsOpen, keybindingsOpen, sshDialogOpen, paneMenuOpen])
 
   const registerTerminal = useCallback((sessionId: string, handle: TerminalHandle): void => {
     terminalsRef.current.set(sessionId, handle)
@@ -795,6 +803,12 @@ export function App(): ReactElement {
       if (sid !== focusedSid && h.quickSelect?.active()) h.quickSelect.exit()
     }
   }, [])
+  // A right-click the focused terminal application did not claim (see
+  // pane-menu.ts). Opening the menu is all this does; the menu itself picks the
+  // action and dispatches it through runAction.
+  const onPaneMenu = useCallback((paneId: number, x: number, y: number): void => {
+    setPaneMenu({ paneId, x, y })
+  }, [])
   const resolvePrompt = useCallback((promptId: string, value: string): void => {
     void window.api.sessions.answerPrompt(promptId, value)
     dispatch({ type: 'prompt-done', promptId })
@@ -816,6 +830,7 @@ export function App(): ReactElement {
     onTitle,
     onCwd,
     onFocus,
+    onPaneMenu,
     resolvePrompt
   }
 
@@ -879,6 +894,18 @@ export function App(): ReactElement {
       />
       <LeaderOverlay active={leaderActive} />
       <ResizeOverlay active={resizeActive} />
+      {paneMenu && (
+        <PaneMenu
+          x={paneMenu.x}
+          y={paneMenu.y}
+          zoomed={paneMenuZoomed}
+          onSelect={(action) => {
+            setPaneMenu(null)
+            runAction(action, paneMenu.paneId)
+          }}
+          onClose={() => setPaneMenu(null)}
+        />
+      )}
       <RenameTabOverlay
         open={renameOpen && state.activeTabId !== null}
         initial={renameInitial}

@@ -512,6 +512,50 @@ kbd {
   border-color: var(--app-accent);
 }
 
+/* ---------- pane context menu ---------- */
+
+/* Full-window dismissal layer: a click anywhere outside the menu closes it, as
+   a context menu does everywhere else. Above the panes, below the dialogs. */
+.pane-menu-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+
+/* Fixed rather than absolute: the menu is measured against the window to be
+   kept inside it, and it must not be clipped by the pane it was opened on. */
+.pane-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  background: rgba(11, 14, 20, 0.96);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+.pane-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--app-fg);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.pane-menu-item:hover,
+.pane-menu-item:focus-visible {
+  background: var(--app-tab-active);
+  color: var(--app-accent);
+  outline: none;
+}
+
 /* ---------- modal ---------- */
 
 .modal-overlay {

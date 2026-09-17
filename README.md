@@ -29,6 +29,7 @@ This document is the user manual. If you just want to get running, read
 - [Quick select](#quick-select)
 - [Word selection by double-click](#word-selection-by-double-click)
 - [Mouse focus follows the pointer](#mouse-focus-follows-the-pointer)
+- [Right-click and the pane menu](#right-click-and-the-pane-menu)
 - [Inline images](#inline-images)
 - [Font ligatures](#font-ligatures)
 - [SSH connections](#ssh-connections)
@@ -158,7 +159,7 @@ pane and catches up only by redrawing.
 | Action | Keys |
 |---|---|
 | Copy | `Ctrl+Shift+C` |
-| Paste | `Ctrl+Shift+V`, right-click, or middle-click |
+| Paste | `Ctrl+Shift+V` or middle-click |
 | Copy on select | Automatic (on by default) |
 
 **Copy on select** is controlled by `copyOnSelect` (default `true`). With it enabled, releasing the
@@ -236,6 +237,31 @@ It follows *movement*, not *position*: when the window returns to the foreground
 clicking the taskbar) the browser re-emits a `mouseenter`/`mousemove` at the same coordinates. That
 is not a move, so focus is not stolen from the pane you were typing in. Likewise a newly created
 split that happens to appear under the cursor does not grab focus.
+
+## Right-click and the pane menu
+
+Right-click belongs to the **terminal application** whenever that application has asked for the
+mouse, and to the **muxer** when it has not.
+
+A program that enables mouse tracking (`CSI ? 1000 h` and friends — htop, lazygit, `vim` with
+`set mouse=a`) is drawing its own interface and reads the right button as one of its inputs, so the
+click is reported to it as a mouse event, exactly as a left-click is. An application that never
+asked for the mouse has no use for the button, and right-clicking its pane opens a menu with the
+pane commands:
+
+| Entry | Same as |
+|---|---|
+| Zoom pane / Unzoom pane | `Ctrl+Shift+Z` |
+| Close pane | `Ctrl+Shift+W` |
+| Split left/right | `Ctrl+Shift+Alt+5` |
+| Split top/bottom | `Ctrl+Shift+Alt+'` |
+
+Hold **Shift** to get the menu from inside a mouse-aware application; that is the gesture xterm
+already reserves for the local UI (its force-selection), and the one Windows Terminal uses for the
+same purpose. `Esc` or a click anywhere outside closes the menu.
+
+There is no right-click paste: the button is spoken for either by the application drawing the
+screen or by the menu. Middle-click still pastes (`Ctrl+Shift+V` does too).
 
 ## Inline images
 

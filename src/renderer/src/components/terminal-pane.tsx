@@ -24,6 +24,7 @@ import type { CopyAction, CopyCursor, CopyModeState, CopySelectionMode, CopyView
 import { DEFAULT_QUICK_SELECT_PATTERN, assignLabels, findMatches, matchAtColumn, resolveLabel } from '../quick-select'
 import { pointerMoved } from '../pointer-move'
 import type { PointerPosition } from '../pointer-move'
+import { paneMenuRequested } from '../pane-menu'
 import { decodeOsc52 } from '../osc52'
 import type { QuickLine, QuickMatch } from '../quick-select'
 
@@ -76,6 +77,8 @@ export interface TerminalPaneProps {
   onTitle: (paneId: number, title: string) => void
   onCwd: (paneId: number, cwd: string) => void
   onFocus: (paneId: number) => void
+  /** A right-click the terminal application did not claim: open the pane menu. */
+  onPaneMenu: (paneId: number, x: number, y: number) => void
   resolvePrompt: (promptId: string, value: string) => void
 }
 
@@ -735,17 +738,39 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
-    // Double-click picks the token under the pointer with QuickSelect's rules
-    // (see matchAtColumn) instead of xterm's own `wordSeparator` rule, so that
-    // "select the word here" and "pick this match from the overlay" agree: a
-    // path, a URL or a qualified name comes out whole either way.
-    //
-    // xterm runs its word selection from `mousedown` when `detail === 2`, so the
-    // rule is replaced by intercepting that event in the capture phase before it
-    // reaches the terminal -- a `dblclick` listener would be too late, and the
-    // native selection would flash first. Clicking where no token matches falls
-    // through to xterm's behaviour (which selects a whitespace run, if anything).
+    // Two gestures are claimed from the capture phase so that they land before
+    // the terminal's own `mousedown` handler runs.
     const onMouseDownCapture = (e: MouseEvent): void => {
+      // Right-click belongs to the terminal application whenever it has asked
+      // for the mouse, and to the pane menu when it has not (see pane-menu.ts).
+      // Asking here, at `mousedown`, is what separates the two: xterm reports
+      // the button to the application from this very event, so by the time
+      // `contextmenu` arrives it is already gone.
+      if (e.button === 2) {
+        if (!paneMenuRequested({ mouseTracking: term.modes.mouseTrackingMode, shiftKey: e.shiftKey })) {
+          return // the application wants the mouse: let xterm report the click to it
+        }
+        e.preventDefault()
+        e.stopPropagation()
+        // The terminal's own mousedown handler is not going to run, so take over
+        // what it would have done for this click: focus the pane, then ask for
+        // the menu at the pointer.
+        term.focus()
+        props.onFocus(pane.id)
+        props.onPaneMenu(pane.id, e.clientX, e.clientY)
+        return
+      }
+
+      // Double-click picks the token under the pointer with QuickSelect's rules
+      // (see matchAtColumn) instead of xterm's own `wordSeparator` rule, so that
+      // "select the word here" and "pick this match from the overlay" agree: a
+      // path, a URL or a qualified name comes out whole either way.
+      //
+      // xterm runs its word selection from `mousedown` when `detail === 2`, so the
+      // rule is replaced by intercepting that event in the capture phase before it
+      // reaches the terminal -- a `dblclick` listener would be too late, and the
+      // native selection would flash first. Clicking where no token matches falls
+      // through to xterm's behaviour (which selects a whitespace run, if anything).
       if (e.button !== 0 || e.detail !== 2) return
       const match = quickMatchAtEvent(term, e)
       if (!match) return
@@ -758,6 +783,13 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       selectQuickMatch(term, match)
     }
     container.addEventListener('mousedown', onMouseDownCapture, true)
+
+    // No OS context menu over a terminal. xterm already suppresses it for its
+    // own element (its `rightClickHandler` calls preventDefault), but the pane's
+    // padding around that element is part of the pane too, and a right-click
+    // landing there would otherwise open Chromium's menu over the grid.
+    const onContextMenu = (e: MouseEvent): void => e.preventDefault()
+    container.addEventListener('contextmenu', onContextMenu)
 
     // The case repaint() exists for, caught where it happens: a program that
     // clears the screen and draws its own frame over it. That is where a WebGL
@@ -912,6 +944,7 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
       if (eraseRepaint !== undefined) window.clearTimeout(eraseRepaint)
       document.removeEventListener('visibilitychange', onVisibilityChange)
       container.removeEventListener('mousedown', onMouseDownCapture, true)
+      container.removeEventListener('contextmenu', onContextMenu)
       ro.disconnect()
       const sid = sessionIdRef.current
       if (sid) {
@@ -1002,10 +1035,16 @@ export function TerminalPane(props: TerminalPaneProps): ReactElement {
         ref={containerRef}
         onMouseDown={(e) => {
           onFocus(pane.id)
-          // middle-click paste, right-click paste (wezterm/Windows Terminal style).
-          // Goes through `Terminal.paste` so line endings are normalized to CR
-          // and bracketed paste is applied -- see pasteClipboard in app.tsx.
-          if (e.button === 1 || e.button === 2) {
+          // Middle-click paste (wezterm/Windows Terminal style). Goes through
+          // `Terminal.paste` so line endings are normalized to CR and bracketed
+          // paste is applied -- see pasteClipboard in app.tsx.
+          //
+          // Right-click is deliberately not here: it belongs to the terminal
+          // application while that application tracks the mouse, and to the pane
+          // menu when it does not (see the capture handler above and
+          // pane-menu.ts). The button only reaches this handler in the tracked
+          // case, where doing nothing is exactly right.
+          if (e.button === 1) {
             e.preventDefault()
             void window.navigator.clipboard.readText().then((t) => {
               if (t) termRef.current?.paste(t)
