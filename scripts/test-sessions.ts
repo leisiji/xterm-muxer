@@ -154,7 +154,7 @@ function testUpdateConfig(): void {
   try {
     const c1 = updateConfig({ font: { size: 18 } })
     assert.strictEqual(c1.font.size, 18)
-    assert.strictEqual(c1.font.family, 'Maple Mono NF CN', 'default font family preserved')
+    assert.strictEqual(c1.font.family, '', 'default font family preserved (blank = platform stack)')
     assert.strictEqual(c1.font.lineHeight, 1.15, 'unspecified field keeps default')
     assert.strictEqual(c1.scrollback, 10000, 'default history limit is 10000')
     assert.strictEqual(loadConfig().font.size, 18, 'persisted to disk')

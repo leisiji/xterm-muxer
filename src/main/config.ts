@@ -20,6 +20,12 @@ export interface SavedSshHost {
 export interface AppConfig {
   shell?: { path?: string; args?: string[] }
   /**
+   * `family` is empty by default, which makes the renderer use its platform
+   * monospace stack (Cascadia Mono/Consolas on Windows). Naming a family that is
+   * not installed is not an error — the terminal just falls back — but leaving it
+   * blank is what keeps the settings dialog's font picker usable: a pre-filled
+   * value makes Chromium filter the datalist down to the single exact match.
+   *
    * `ligatures` turns on the font's programming ligatures (its `calt` feature)
    * through the @xterm/addon-ligatures character joiner. Only the WebGL renderer
    * draws joined cells, so it needs `webgl` left on; changing either needs a
@@ -78,7 +84,7 @@ export interface AppConfig {
 }
 
 export const defaultConfig: AppConfig = {
-  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15, ligatures: true },
+  font: { family: '', size: 14, lineHeight: 1.15, ligatures: true },
   theme: { mode: 'system' },
   ssh: {},
   scrollback: 10000,

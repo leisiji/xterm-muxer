@@ -10,8 +10,10 @@ import {
   leafRects,
   paneOrder,
   findResizeSplit,
-  resizeRatio
+  resizeRatio,
+  oppositeDirection
 } from '../src/renderer/src/mux-model'
+import type { FocusMove } from '../src/renderer/src/mux-model'
 import { muxReducer } from '../src/renderer/src/mux-reducer'
 import { DEFAULT_LEADER_KEYS, resolveLeaderKey, resolveResizeKey } from '../src/renderer/src/keys'
 import {
@@ -112,6 +114,48 @@ assert.strictEqual(neighborLeaf(pair, 10, 'right'), 20)
 assert.strictEqual(neighborLeaf(pair, 20, 'left'), 10)
 assert.strictEqual(neighborLeaf(pair, 10, 'down'), null)
 ok('neighborLeaf')
+
+// --- directional focus: the way back ---
+assert.strictEqual(oppositeDirection('left'), 'right')
+assert.strictEqual(oppositeDirection('up'), 'down')
+assert.strictEqual(oppositeDirection(oppositeDirection('up')), 'up')
+
+// left | (top over bottom) -- the layout that has no geometric answer: from the
+// left pane, `right` scores both right-hand panes identically (same dx, dy equal
+// and opposite), so it lands on whichever comes first in the tree.
+const ltb = insertSplit(insertSplit({ kind: 'pane', paneId: 51 }, 51, 'row', 52), 52, 'col', 53)
+assert.deepStrictEqual(
+  [...leafRects(ltb).entries()].map(([id, r]) => [id, r.x, r.y]),
+  [
+    [51, 0, 0],
+    [52, 0.5, 0],
+    [53, 0.5, 0.5]
+  ],
+  'left pane full height, 52 above 53'
+)
+assert.strictEqual(neighborLeaf(ltb, 53, 'left'), 51, 'left from the bottom-right pane is unambiguous')
+assert.strictEqual(neighborLeaf(ltb, 51, 'right'), 52, 'without the memory, geometry takes the tree-first pane')
+// Bottom-right -> left -> right must come back to bottom-right, not top-right.
+const wentLeft: FocusMove = { from: 53, to: 51, dir: 'left' }
+assert.strictEqual(neighborLeaf(ltb, 51, 'right', wentLeft), 53, 'the memory retraces the move')
+// And the same in reverse: top-right -> left -> right returns to top-right.
+assert.strictEqual(neighborLeaf(ltb, 51, 'right', { from: 52, to: 51, dir: 'left' }), 52)
+
+// The vertical twin: (left over right) under a full-width pane.
+const tbs = insertSplit(insertSplit({ kind: 'pane', paneId: 61 }, 61, 'col', 62), 62, 'row', 63)
+assert.strictEqual(neighborLeaf(tbs, 63, 'up'), 61, 'up from the bottom-right pane')
+assert.strictEqual(neighborLeaf(tbs, 61, 'down'), 62, 'without the memory, geometry takes the tree-first pane')
+assert.strictEqual(neighborLeaf(tbs, 61, 'down', { from: 63, to: 61, dir: 'up' }), 63, 'the memory retraces it')
+assert.strictEqual(neighborLeaf(tbs, 61, 'down', { from: 62, to: 61, dir: 'up' }), 62)
+
+// The memory is narrow: it only answers for the pane it landed in, only in the
+// opposite direction, and only while that pane is still in the tree.
+assert.strictEqual(neighborLeaf(ltb, 51, 'left', wentLeft), null, 'same direction: memory does not apply')
+assert.strictEqual(neighborLeaf(ltb, 53, 'left', wentLeft), 51, 'other pane: memory does not apply')
+assert.strictEqual(neighborLeaf(ltb, 51, 'right', { from: 999, to: 51, dir: 'left' }), 52, 'closed pane: memory does not apply')
+// A two-pane split is unambiguous either way, memory or not.
+assert.strictEqual(neighborLeaf(pair, 10, 'right', { from: 20, to: 10, dir: 'left' }), 20)
+ok('neighborLeaf: opposite direction retraces the move that was made')
 
 // --- reducer ---
 type State = ReturnType<typeof muxReducer>

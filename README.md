@@ -133,6 +133,15 @@ drag the divider afterwards.
 | Resize | `Alt+N` then `r`, then `h`/`j`/`k`/`l` |
 | Close the pane | `Ctrl+Shift+W`, or `Alt+N` then `x` |
 
+**Moving focus by direction** picks the nearest pane that way, and remembers the move: pressing the
+opposite direction straight after returns to the pane it came from. That matters wherever geometry
+has no answer — with one pane on the left and two stacked on the right, both right-hand panes are the
+same distance from the left one, so `left` and then `right` would otherwise land in whichever of the
+two the tree happens to list first instead of the one you were in. The memory is narrow: it applies
+only to the pane the move landed in, only in the opposite direction, and only while that pane is
+still open. Any other focus change in between — a click, a tab switch, a split — makes it stale, and
+the nearest pane wins again.
+
 Resize mode exits on `Esc` or after one second without a keypress. Closing the last pane of the
 last tab closes the window.
 
@@ -492,7 +501,9 @@ the keys you want to change.
   "shell": { "path": "powershell.exe", "args": ["-NoLogo"] }, // Windows default: %ComSpec% (cmd.exe)
   // ligatures: programming ligatures (the font's calt feature). Default true.
   // Only effective under the WebGL renderer; changing it needs a restart.
-  "font": { "family": "Maple Mono NF CN", "size": 14, "lineHeight": 1.15, "ligatures": true },
+  // family: leave blank for the platform monospace stack (Cascadia Mono/Consolas
+  // on Windows). Any installed family name works, e.g. "JetBrains Mono".
+  "font": { "family": "", "size": 14, "lineHeight": 1.15, "ligatures": true },
   "theme": { "mode": "system" }, // system | light | dark; may also carry custom colors
   "scrollback": 10000, // history limit in lines; also adjustable with Ctrl+,
   "window": { "width": 1100, "height": 700, "title": "XtermMuxer" },
@@ -545,7 +556,7 @@ the keys you want to change.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `shell.path` / `shell.args` | string / string[] | `%ComSpec%` on Windows | Local shell to launch. |
-| `font.family` | string | `Maple Mono NF CN` | |
+| `font.family` | string | `""` (platform monospace stack) | |
 | `font.size` | number | `14` | |
 | `font.lineHeight` | number | `1.15` | |
 | `font.ligatures` | boolean | `true` | WebGL-only; needs restart. |

@@ -154,7 +154,40 @@ export function setRatioAt(node: PaneNode, path: Array<'a' | 'b'>, ratio: number
   return { ...node, b: setRatioAt(node.b, rest, ratio) }
 }
 
-export type ResizeDirection = 'left' | 'right' | 'up' | 'down'
+/** The four compass directions, shared by focus movement and divider resizing. */
+export type Direction = 'up' | 'down' | 'left' | 'right'
+
+export type ResizeDirection = Direction
+
+/** The opposite direction; the axis a round-trip focus move is checked against. */
+export function oppositeDirection(dir: Direction): Direction {
+  switch (dir) {
+    case 'up':
+      return 'down'
+    case 'down':
+      return 'up'
+    case 'left':
+      return 'right'
+    case 'right':
+      return 'left'
+  }
+}
+
+/**
+ * A directional focus move that just happened: the pane it left, the pane it
+ * landed in, and the way it went.
+ *
+ * Kept because geometry alone cannot undo a move. With one pane on the left and
+ * two stacked on the right, both right-hand panes are the same distance from the
+ * left one -- same `dx`, and `dy` equal and opposite -- so `right` resolves to
+ * whichever of the two comes first in the tree rather than to the one that was
+ * just left. Remembering the move lets the opposite direction retrace it.
+ */
+export interface FocusMove {
+  from: number
+  to: number
+  dir: Direction
+}
 
 /** Leaves in reading order (preorder) — used to cycle panes for "next pane". */
 export function paneOrder(node: PaneNode, out: number[] = []): number[] {
@@ -218,12 +251,32 @@ export function leafRects(node: PaneNode, x = 0, y = 0, w = 1, h = 1, out = new 
   return out
 }
 
-/** Pick the nearest leaf in a compass direction (for Alt+arrow focus movement). */
+/**
+ * Pick the nearest leaf in a compass direction (for Alt+arrow focus movement).
+ *
+ * `lastMove` is the move being undone, if any: pressing `right` straight after
+ * `left` goes back to the pane the `left` came from, rather than to whichever
+ * pane geometry happens to prefer. That is the only thing that can resolve the
+ * ambiguous layouts (see `FocusMove`), and it is deliberately narrow -- the
+ * memory only applies to the pane it landed in, in the opposite direction, and
+ * only while that pane is still in the tree. Any other focus change in between
+ * (a click, a tab switch, a split) leaves it stale and the geometric answer
+ * stands.
+ */
 export function neighborLeaf(
   node: PaneNode,
   paneId: number,
-  dir: 'up' | 'down' | 'left' | 'right'
+  dir: Direction,
+  lastMove?: FocusMove | null
 ): number | null {
+  if (
+    lastMove &&
+    lastMove.to === paneId &&
+    lastMove.dir === oppositeDirection(dir) &&
+    containsPane(node, lastMove.from)
+  ) {
+    return lastMove.from
+  }
   const rects = leafRects(node)
   const cur = rects.get(paneId)
   if (!cur) return null

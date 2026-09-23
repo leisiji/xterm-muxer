@@ -12,7 +12,7 @@ import { SplitView } from './components/split-view'
 import type { TerminalHandle } from './components/terminal-pane'
 import { muxReducer, findTabByPaneId } from './mux-reducer'
 import { nextPaneId, nextTabId, neighborLeaf, paneOrder, findResizeSplit, resizeRatio } from './mux-model'
-import type { MuxState, PaneRecord, PendingCreate, PromptState, SplitOrientation } from './mux-model'
+import type { Direction, FocusMove, MuxState, PaneRecord, PendingCreate, PromptState, SplitOrientation } from './mux-model'
 import type { RendererConfig, SavedSshHost, SavedSshHostInput } from './types'
 import { resolveTheme } from './theme'
 import { decideKey, formatCombo, resolveKeymap } from './keymap'
@@ -22,7 +22,7 @@ import type { LeaderKeyResult } from './keys'
 const initialMux: MuxState = { tabs: [], activeTabId: null }
 
 const fallbackConfig: RendererConfig = {
-  font: { family: 'Maple Mono NF CN', size: 14, lineHeight: 1.15, ligatures: true },
+  font: { family: '', size: 14, lineHeight: 1.15, ligatures: true },
   theme: { mode: 'system' },
   scrollback: 10000,
   window: { width: 1100, height: 700, title: 'XtermMuxer' },
@@ -58,6 +58,10 @@ export function App(): ReactElement {
   const [resizeActive, setResizeActive] = useState(false)
   const resizeRef = useRef(false)
   const resizeTimerRef = useRef<number | undefined>(undefined)
+  // The last directional pane move, so pressing the opposite direction goes back
+  // where it came from. A ref rather than state: nothing renders from it, and the
+  // keydown handler has to read it without waiting for a re-render.
+  const focusMoveRef = useRef<FocusMove | null>(null)
   // ActivateLastTab (Alt+m): remember the tab we came from.
   const lastTabRef = useRef<number | null>(null)
   const prevActiveTabRef = useRef<number | null>(null)
@@ -383,12 +387,16 @@ export function App(): ReactElement {
     dispatch({ type: 'activate-tab', tabId: s.tabs[next].id })
   }
 
-  function moveFocus(dir: 'up' | 'down' | 'left' | 'right'): void {
+  function moveFocus(dir: Direction): void {
     const s = stateRef.current
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
     if (!tab || tab.activePaneId === null) return
-    const next = neighborLeaf(tab.root, tab.activePaneId, dir)
-    if (next !== null) dispatch({ type: 'focus-pane', paneId: next })
+    const from = tab.activePaneId
+    const next = neighborLeaf(tab.root, from, dir, focusMoveRef.current)
+    if (next === null) return
+    // Remember the move so its opposite can retrace it (see FocusMove).
+    focusMoveRef.current = { from, to: next, dir }
+    dispatch({ type: 'focus-pane', paneId: next })
   }
 
   /** ActivatePaneDirection("Next"): cycle panes in tree order. */

@@ -109,7 +109,7 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
   }
 
   const reset = (): void => {
-    setFamily('Maple Mono NF CN')
+    setFamily('')
     setSize('14')
     setLineHeight('1.15')
     setHistory('10000')
@@ -128,7 +128,7 @@ export function SettingsDialog(props: SettingsDialogProps): ReactElement | null 
             ref={familyRef}
             value={family}
             list="font-family-list"
-            placeholder="Maple Mono NF CN"
+            placeholder="e.g. Cascadia Mono"
             onChange={(e) => setFamily(e.target.value)}
           />
           <datalist id="font-family-list">
